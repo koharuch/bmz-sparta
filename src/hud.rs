@@ -92,14 +92,14 @@ mod win {
                         0,
                         0,
                         400,
-                        BOOL(0),
-                        BOOL(0),
-                        BOOL(0),
-                        FONT_CHARSET(1),           // DEFAULT_CHARSET
-                        FONT_OUTPUT_PRECISION(0),  // OUT_DEFAULT_PRECIS
-                        FONT_CLIP_PRECISION(0),    // CLIP_DEFAULT_PRECIS
-                        FONT_QUALITY(4),           // ANTIALIASED_QUALITY
-                        FONT_PITCH_AND_FAMILY(0),  // DEFAULT_PITCH
+                        0, // italic
+                        0, // underline
+                        0, // strikeout
+                        1, // DEFAULT_CHARSET
+                        0, // OUT_DEFAULT_PRECIS
+                        0, // CLIP_DEFAULT_PRECIS
+                        4, // ANTIALIASED_QUALITY
+                        0, // DEFAULT_PITCH
                         w!("MS Gothic"),
                     )
                 };
@@ -385,7 +385,7 @@ mod win {
             let (w, hh) = (h.w, h.h);
             unsafe {
                 let screen_dc = GetDC(None);
-                let mem_dc = CreateCompatibleDC(Some(screen_dc));
+                let mem_dc = CreateCompatibleDC(screen_dc);
                 let bmi = BITMAPINFO {
                     bmiHeader: BITMAPINFOHEADER {
                         biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -404,7 +404,7 @@ mod win {
                 };
                 let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
                 let hbmp = CreateDIBSection(
-                    Some(mem_dc),
+                    mem_dc,
                     &bmi,
                     DIB_RGB_COLORS,
                     &mut ptr,
@@ -449,13 +449,13 @@ mod win {
                 };
                 let _ = UpdateLayeredWindow(
                     hwnd,
-                    Some(screen_dc),
-                    Some(&dst),
-                    Some(&size),
-                    Some(mem_dc),
-                    Some(&src),
+                    screen_dc,
+                    Some(std::ptr::addr_of!(dst)),
+                    Some(std::ptr::addr_of!(size)),
+                    mem_dc,
+                    Some(std::ptr::addr_of!(src)),
                     COLORREF(0),
-                    Some(&blend),
+                    Some(std::ptr::addr_of!(blend)),
                     ULW_ALPHA,
                 );
                 SelectObject(mem_dc, old);
@@ -535,7 +535,7 @@ mod win {
                 h,
                 None,
                 None,
-                Some(hinst),
+                hinst,
                 None,
             );
             let hwnd = match hwnd {
@@ -543,7 +543,7 @@ mod win {
                 Err(_) => return 1,
             };
             let _ = ShowWindow(hwnd, SW_SHOW);
-            SetTimer(Some(hwnd), 1, 500, None);
+            SetTimer(hwnd, 1, 500, None);
             update(hwnd);
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -553,6 +553,4 @@ mod win {
         }
         0
     }
-
-    use windows::Win32::Foundation::BOOL;
 }
