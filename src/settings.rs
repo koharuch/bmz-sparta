@@ -34,7 +34,8 @@ mod win {
     use crate::config::{cfg_bool, cfg_i64, cfg_set, cfg_str};
     use serde_json::json;
     use std::cell::RefCell;
-    use windows::core::{w, PCWSTR};
+    use windows::core::{w, PCWSTR, PWSTR};
+    use windows::Win32::UI::Controls::{NMHDR, TCITEMHEADERA_MASK, TCITEMW};
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::Graphics::Gdi::*;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -54,10 +55,16 @@ mod win {
     const ID_HUD: i32 = 108;
     const ID_REPORT: i32 = 109;
     const ID_DAY_START: i32 = 110;
+    const ID_TAB: i32 = 111;
     const ID_START: i32 = 1;
     const ID_CANCEL: i32 = 2;
 
     const WM_COMMAND: u32 = 0x0111;
+    const WM_NOTIFY: u32 = 0x004E;
+    const TCM_INSERTITEMW: u32 = 0x1307;
+    const TCM_GETCURSEL: u32 = 0x130B;
+    const TCN_SELCHANGE: u32 = 4294966745; // -551
+    const TCIF_TEXT: u32 = 0x0001;
     const WM_CREATE: u32 = 0x0001;
     const WM_CLOSE: u32 = 0x0010;
     const WM_DESTROY: u32 = 0x0002;
@@ -110,6 +117,9 @@ mod win {
         h_gas: HWND,
         h_hud: HWND,
         h_report: HWND,
+        h_tab: HWND,
+        page_main: Vec<HWND>,
+        page_report: Vec<HWND>,
         result: Option<bool>,
     }
 
@@ -224,8 +234,8 @@ mod win {
         STATE.with(|s| {
             let mut guard = s.borrow_mut();
             let Some(st) = guard.as_mut() else { return };
-            let label = |x: i32, y: i32, w: i32, text: &str| {
-                make(hwnd, w!("STATIC"), text, 0, x, y + 3, w, 20, 0, font)
+            let label = |page: &mut Vec<HWND>, x: i32, y: i32, w: i32, text: &str| {
+                page.push(make(hwnd, w!("STATIC"), text, 0, x, y + 3, w, 20, 0, font));
             };
             make(
                 hwnd,
@@ -239,47 +249,57 @@ mod win {
                 0,
                 font,
             );
-            label(12, 44, 176, "難易度表");
+            // タブ: 「プレイ」= セッション設定、「レポート」= HTML出力まわり
+            st.h_tab = make(
+                hwnd,
+                w!("SysTabControl32"),
+                "",
+                0,
+                6,
+                40,
+                452,
+                384,
+                ID_TAB,
+                font,
+            );
+            for (i, name) in ["プレイ", "レポート"].iter().enumerate() {
+                let mut text: Vec<u16> =
+                    name.encode_utf16().chain(std::iter::once(0)).collect();
+                let item = TCITEMW {
+                    mask: TCITEMHEADERA_MASK(TCIF_TEXT),
+                    pszText: PWSTR(text.as_mut_ptr()),
+                    ..Default::default()
+                };
+                send(st.h_tab, TCM_INSERTITEMW, i, &item as *const TCITEMW as isize);
+            }
+            label(&mut st.page_main, 12, 80, 176, "難易度表");
             st.h_table = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 (CBS_DROPDOWNLIST as u32) | WS_VSCROLL.0,
                 196,
-                44,
+                80,
                 248,
                 200,
                 ID_TABLE,
                 font,
             );
-            label(12, 82, 176, "開始レベル");
+            label(&mut st.page_main, 12, 118, 176, "開始レベル");
             st.h_level = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 (CBS_DROPDOWNLIST as u32) | WS_VSCROLL.0,
                 196,
-                82,
+                118,
                 248,
                 200,
                 ID_LEVEL,
                 font,
             );
-            label(12, 120, 176, "セッション時間 (分)");
+            label(&mut st.page_main, 12, 156, 176, "セッション時間 (分)");
             st.h_minutes = make(
-                hwnd,
-                w!("EDIT"),
-                "",
-                WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
-                196,
-                120,
-                90,
-                24,
-                ID_MINUTES,
-                font,
-            );
-            label(12, 156, 176, "インターバル (秒)");
-            st.h_result_sec = make(
                 hwnd,
                 w!("EDIT"),
                 "",
@@ -288,11 +308,11 @@ mod win {
                 156,
                 90,
                 24,
-                ID_RESULT_SEC,
+                ID_MINUTES,
                 font,
             );
-            label(12, 192, 176, "日付の切り替わり (時)");
-            st.h_day_start = make(
+            label(&mut st.page_main, 12, 192, 176, "インターバル (秒)");
+            st.h_result_sec = make(
                 hwnd,
                 w!("EDIT"),
                 "",
@@ -301,43 +321,56 @@ mod win {
                 192,
                 90,
                 24,
+                ID_RESULT_SEC,
+                font,
+            );
+            label(&mut st.page_report, 12, 124, 176, "日付の切り替わり (時)");
+            st.h_day_start = make(
+                hwnd,
+                w!("EDIT"),
+                "",
+                WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
+                196,
+                124,
+                90,
+                24,
                 ID_DAY_START,
                 font,
             );
-            label(12, 228, 176, "選曲方式");
+            label(&mut st.page_main, 12, 264, 176, "選曲方式");
             st.h_mode = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
                 196,
-                228,
+                264,
                 248,
                 200,
                 ID_MODE,
                 font,
             );
-            label(12, 304, 176, "ゲージ");
+            label(&mut st.page_main, 12, 340, 176, "ゲージ");
             st.h_gauge = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
                 196,
-                304,
+                340,
                 248,
                 200,
                 ID_GAUGE,
                 font,
             );
-            label(12, 266, 176, "GAS");
+            label(&mut st.page_main, 12, 302, 176, "GAS");
             st.h_gas = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
                 196,
-                266,
+                302,
                 248,
                 200,
                 ID_GAS,
@@ -349,7 +382,7 @@ mod win {
                 "HUDを表示する",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                342,
+                378,
                 248,
                 22,
                 ID_HUD,
@@ -361,7 +394,7 @@ mod win {
                 "終了時に結果HTMLを開く",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                368,
+                84,
                 248,
                 22,
                 ID_REPORT,
@@ -373,7 +406,7 @@ mod win {
                 "開始",
                 BS_PUSHBUTTON as u32,
                 196,
-                408,
+                436,
                 110,
                 34,
                 ID_START,
@@ -385,7 +418,7 @@ mod win {
                 "キャンセル",
                 BS_PUSHBUTTON as u32,
                 334,
-                408,
+                436,
                 110,
                 34,
                 ID_CANCEL,
@@ -446,7 +479,30 @@ mod win {
             update_gauge_enabled(st);
             set_check(st.h_hud, cfg_bool(&st.cfg, "hud", true));
             set_check(st.h_report, cfg_bool(&st.cfg, "report", true));
+            // タブのページ振り分け (コントロール本体は st の各フィールドから集める)
+            st.page_main.extend([
+                st.h_table,
+                st.h_level,
+                st.h_minutes,
+                st.h_result_sec,
+                st.h_mode,
+                st.h_gas,
+                st.h_gauge,
+                st.h_hud,
+            ]);
+            st.page_report.extend([st.h_report, st.h_day_start]);
+            show_page(st, 0);
         });
+    }
+
+    /// タブ切り替え: 選択中ページのコントロールだけを表示する
+    unsafe fn show_page(st: &State, page: i32) {
+        for h in &st.page_main {
+            let _ = ShowWindow(*h, if page == 0 { SW_SHOW } else { SW_HIDE });
+        }
+        for h in &st.page_report {
+            let _ = ShowWindow(*h, if page == 1 { SW_SHOW } else { SW_HIDE });
+        }
     }
 
     /// GAS が有効 (OFF 以外) のときはゲージをグレーアウトする。
@@ -549,6 +605,19 @@ mod win {
                     DefWindowProcW(hwnd, msg, wp, lp)
                 }
             }
+            WM_NOTIFY => {
+                let hdr = unsafe { &*(lp.0 as *const NMHDR) };
+                if hdr.code == TCN_SELCHANGE {
+                    STATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            let sel =
+                                unsafe { send(st.h_tab, TCM_GETCURSEL, 0, 0) }.0 as i32;
+                            unsafe { show_page(st, sel) };
+                        }
+                    });
+                }
+                LRESULT(0)
+            }
             WM_CLOSE => {
                 STATE.with(|s| {
                     if let Some(st) = s.borrow_mut().as_mut() {
@@ -593,6 +662,9 @@ mod win {
                 h_minutes: HWND::default(),
                 h_result_sec: HWND::default(),
                 h_day_start: HWND::default(),
+                h_tab: HWND::default(),
+                page_main: Vec::new(),
+                page_report: Vec::new(),
                 h_mode: HWND::default(),
                 h_gauge: HWND::default(),
                 h_gas: HWND::default(),
@@ -628,7 +700,7 @@ mod win {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 480,
-                516,
+                528,
                 None,
                 None,
                 hinst,
