@@ -273,7 +273,7 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
         cfg_set(&mut cfg, "start_level", json!(v));
     }
     if !gui_done && (cfg.get("minutes").is_none() || setup) {
-        let v: i64 = ask("セッション上限 (分): ", Some("60"))
+        let v: i64 = ask("セッション時間 (分): ", Some("60"))
             .and_then(|s| s.parse().ok())
             .unwrap_or(60);
         cfg_set(&mut cfg, "minutes", json!(v));

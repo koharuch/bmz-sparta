@@ -27,7 +27,7 @@ and it launches charts one by one, moving you up or down levels by your results.
 1. [Releases](https://github.com/koharuch/bmz-sparta/releases) から
    `bmz-sparta.exe` をダウンロードして、好きなフォルダに置く
 2. `bmz-sparta.exe` を実行する
-   - 設定ウィンドウが開きます。難易度表・開始レベル・セッション上限などを
+   - 設定ウィンドウが開きます。難易度表・開始レベル・セッション時間などを
      選んで「開始」を押してください
      (設定は exe と同じフォルダの `sparta.json` に保存されます)
    - bmz-player は一般的なインストール場所から自動検出します
@@ -54,8 +54,8 @@ exe と同じフォルダに生成されます。手で編集することもで�
 | `profile` | score.db のプロファイル名 | 最初に見つかったもの |
 | `table_id` | 使う難易度表の ID | 初回に対話で選択 |
 | `start_level` | 開始レベル | 初回に対話で入力 |
-| `minutes` | セッション上限 (分) | 60 |
-| `result_seconds` | リザルト表示後、次の曲へ進むまでの秒数 | 20 |
+| `minutes` | セッション時間 (分) | 60 |
+| `result_seconds` | 曲が終わってから (スコア保存を検知してから) 次の曲へ進むまでの秒数 | 20 |
 | `pick_mode` | 選曲方式: `priority` / `noplay_failed` / `random` | `priority` |
 | `gauge` | 起動時のゲージ上書き (例: `ex-hard`)。プロファイルは変更しない | なし |
 | `gas` | 起動時の GAS 上書き | なし |

@@ -38,6 +38,7 @@ mod win {
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::Graphics::Gdi::*;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
     use windows::Win32::UI::WindowsAndMessaging::*;
 
     const ID_TABLE: i32 = 101;
@@ -64,6 +65,27 @@ mod win {
     const BM_GETCHECK: u32 = 0x00F0;
     const BM_SETCHECK: u32 = 0x00F1;
     const CBN_SELCHANGE: u32 = 1;
+
+    /// (sparta.json / bmz CLI の値, 表示名)。先頭は「上書きしない」
+    const GAUGES: [(&str, &str); 7] = [
+        ("", "プロファイル設定のまま"),
+        ("assist-easy", "ASSIST EASY"),
+        ("easy", "EASY"),
+        ("normal", "NORMAL"),
+        ("hard", "HARD"),
+        ("ex-hard", "EX HARD"),
+        ("hazard", "HAZARD"),
+    ];
+
+    /// GAS は off (無効を明示) と未設定を区別する
+    const GASES: [(&str, &str); 6] = [
+        ("", "プロファイル設定のまま"),
+        ("off", "OFF"),
+        ("continue", "CONTINUE"),
+        ("hard-to-groove", "HARD-TO-GROOVE"),
+        ("best-clear", "BEST CLEAR"),
+        ("select-to-under", "SELECT-TO-UNDER"),
+    ];
 
     const MODES: [(&str, &str); 3] = [
         ("priority", "未プレイ・未クリア優先"),
@@ -240,7 +262,7 @@ mod win {
                 ID_LEVEL,
                 font,
             );
-            label(16, 120, 130, "セッション上限 (分)");
+            label(16, 120, 130, "セッション時間 (分)");
             st.h_minutes = make(
                 hwnd,
                 w!("EDIT"),
@@ -253,7 +275,7 @@ mod win {
                 ID_MINUTES,
                 font,
             );
-            label(16, 156, 130, "リザルト表示 (秒)");
+            label(16, 156, 130, "次の曲までの待機 (秒)");
             st.h_result_sec = make(
                 hwnd,
                 w!("EDIT"),
@@ -264,6 +286,18 @@ mod win {
                 90,
                 24,
                 ID_RESULT_SEC,
+                font,
+            );
+            make(
+                hwnd,
+                w!("STATIC"),
+                "(曲が終わった時点から数えます)",
+                0,
+                252,
+                159,
+                200,
+                20,
+                0,
                 font,
             );
             label(16, 192, 130, "選曲方式");
@@ -279,41 +313,29 @@ mod win {
                 ID_MODE,
                 font,
             );
-            label(16, 230, 130, "ゲージ上書き");
+            label(16, 230, 130, "ゲージ");
             st.h_gauge = make(
                 hwnd,
-                w!("EDIT"),
+                w!("COMBOBOX"),
                 "",
-                WS_BORDER.0 | (ES_AUTOHSCROLL as u32),
+                CBS_DROPDOWNLIST as u32,
                 154,
                 230,
                 290,
-                24,
+                200,
                 ID_GAUGE,
                 font,
             );
-            make(
-                hwnd,
-                w!("STATIC"),
-                "(空欄 = プロファイル設定のまま)",
-                0,
-                154,
-                256,
-                290,
-                18,
-                0,
-                font,
-            );
-            label(16, 282, 130, "GAS上書き");
+            label(16, 268, 130, "GAS");
             st.h_gas = make(
                 hwnd,
-                w!("EDIT"),
+                w!("COMBOBOX"),
                 "",
-                WS_BORDER.0 | (ES_AUTOHSCROLL as u32),
+                CBS_DROPDOWNLIST as u32,
                 154,
-                282,
+                268,
                 290,
-                24,
+                200,
                 ID_GAS,
                 font,
             );
@@ -323,7 +345,7 @@ mod win {
                 "HUDを表示する",
                 BS_AUTOCHECKBOX as u32,
                 154,
-                318,
+                306,
                 290,
                 22,
                 ID_HUD,
@@ -335,7 +357,7 @@ mod win {
                 "終了時に結果HTMLを開く",
                 BS_AUTOCHECKBOX as u32,
                 154,
-                344,
+                332,
                 290,
                 22,
                 ID_REPORT,
@@ -347,7 +369,7 @@ mod win {
                 "開始",
                 BS_PUSHBUTTON as u32,
                 154,
-                384,
+                372,
                 130,
                 34,
                 ID_START,
@@ -359,7 +381,7 @@ mod win {
                 "キャンセル",
                 BS_PUSHBUTTON as u32,
                 314,
-                384,
+                372,
                 130,
                 34,
                 ID_CANCEL,
@@ -395,11 +417,30 @@ mod win {
                 .position(|(k, _)| *k == cur_mode)
                 .unwrap_or(0);
             send(st.h_mode, CB_SETCURSEL, m_idx, 0);
-            set_text(st.h_gauge, &cfg_str(&st.cfg, "gauge").unwrap_or_default());
-            set_text(st.h_gas, &cfg_str(&st.cfg, "gas").unwrap_or_default());
+            for (_, name) in GAUGES {
+                combo_add(st.h_gauge, name);
+            }
+            let cur_gauge = cfg_str(&st.cfg, "gauge").unwrap_or_default();
+            let g_idx = GAUGES.iter().position(|(k, _)| *k == cur_gauge).unwrap_or(0);
+            send(st.h_gauge, CB_SETCURSEL, g_idx, 0);
+            for (_, name) in GASES {
+                combo_add(st.h_gas, name);
+            }
+            let cur_gas = cfg_str(&st.cfg, "gas").unwrap_or_default();
+            let gas_idx = GASES.iter().position(|(k, _)| *k == cur_gas).unwrap_or(0);
+            send(st.h_gas, CB_SETCURSEL, gas_idx, 0);
+            update_gauge_enabled(st);
             set_check(st.h_hud, cfg_bool(&st.cfg, "hud", true));
             set_check(st.h_report, cfg_bool(&st.cfg, "report", true));
         });
+    }
+
+    /// GAS が有効 (OFF・未設定以外) のときはゲージをグレーアウトする。
+    /// 保存済みのゲージ値自体は保持する
+    unsafe fn update_gauge_enabled(st: &State) {
+        let gas_sel = combo_sel(st.h_gas);
+        let gas_active = gas_sel >= 2;
+        let _ = EnableWindow(st.h_gauge, !gas_active);
     }
 
     /// 「開始」: コントロール値を cfg へ回収する
@@ -427,8 +468,14 @@ mod win {
         if m_sel >= 0 && (m_sel as usize) < MODES.len() {
             cfg_set(&mut st.cfg, "pick_mode", json!(MODES[m_sel as usize].0));
         }
-        cfg_set(&mut st.cfg, "gauge", json!(get_text(st.h_gauge).trim()));
-        cfg_set(&mut st.cfg, "gas", json!(get_text(st.h_gas).trim()));
+        let g_sel = combo_sel(st.h_gauge);
+        if g_sel >= 0 && (g_sel as usize) < GAUGES.len() {
+            cfg_set(&mut st.cfg, "gauge", json!(GAUGES[g_sel as usize].0));
+        }
+        let gas_sel = combo_sel(st.h_gas);
+        if gas_sel >= 0 && (gas_sel as usize) < GASES.len() {
+            cfg_set(&mut st.cfg, "gas", json!(GASES[gas_sel as usize].0));
+        }
         cfg_set(&mut st.cfg, "hud", json!(checked(st.h_hud)));
         cfg_set(&mut st.cfg, "report", json!(checked(st.h_report)));
     }
@@ -455,6 +502,13 @@ mod win {
                                 let tid = st.tables[sel as usize].0;
                                 unsafe { refill_levels(st, tid, None) };
                             }
+                        }
+                    });
+                    LRESULT(0)
+                } else if id == ID_GAS && code == CBN_SELCHANGE as usize {
+                    STATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            unsafe { update_gauge_enabled(st) };
                         }
                     });
                     LRESULT(0)
