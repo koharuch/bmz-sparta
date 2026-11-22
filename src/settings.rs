@@ -165,7 +165,9 @@ mod win {
         h_pts_clear: HWND,
         h_fail_streak: HWND,
         h_preview: HWND,
+        h_note: HWND,
         preview: Option<std::process::Child>,
+        bmz_child: Option<std::process::Child>,
         preview_written: String,
         page_main: Vec<HWND>,
         page_report: Vec<HWND>,
@@ -510,7 +512,7 @@ mod win {
                 "この曲のベスト・結果を表示",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                244,
+                238,
                 248,
                 22,
                 ID_HUD_BEST,
@@ -522,7 +524,7 @@ mod win {
                 "ルール凡例を表示",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                272,
+                264,
                 248,
                 22,
                 ID_HUD_LEGEND,
@@ -534,7 +536,7 @@ mod win {
                 "残り時間を表示",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                300,
+                290,
                 248,
                 22,
                 ID_HUD_REMAIN,
@@ -546,7 +548,7 @@ mod win {
                 "次の曲までのカウントダウンを表示",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                328,
+                316,
                 248,
                 22,
                 ID_HUD_COUNTDOWN,
@@ -558,10 +560,22 @@ mod win {
                 "プレビュー表示",
                 BS_PUSHBUTTON as u32,
                 196,
-                364,
+                348,
                 248,
                 30,
                 ID_PREVIEW,
+                font,
+            );
+            st.h_note = make(
+                hwnd,
+                w!("STATIC"),
+                "自動再生でランダムな譜面が流れます（スコア保存なし）\r\nゲームが前面のときは Alt+Tab で設定画面に戻れます",
+                0,
+                24,
+                384,
+                424,
+                36,
+                0,
                 font,
             );
             // ---- 詳細タブ (レベル昇降ルール) ----
@@ -772,6 +786,7 @@ mod win {
                 st.h_remain,
                 st.h_countdown,
                 st.h_preview,
+                st.h_note,
             ]);
             st.page_adv.extend([
                 st.h_up_points,
@@ -853,19 +868,83 @@ mod win {
         }
     }
 
-    /// プレビューの背景用に bmz-player 本体も起動する (配置の目安)
-    fn launch_bmz(st: &State) {
-        if let Some(dir) = crate::config::find_bmz_dir(&st.cfg) {
-            let exe = dir.join("bmz-player.exe");
-            if exe.exists() {
-                let _ = std::process::Command::new(exe).spawn();
+    /// プレビュー用にランダムな譜面を選ぶ。
+    /// 選択中の表・レベルを優先し、無ければ表内→全表の順に広げる
+    fn pick_random_chart(lib: &mut crate::db::Library, cfg: &Value) -> Option<String> {
+        let table_id = crate::config::cfg_i64(cfg, "table_id").unwrap_or(0);
+        let level = crate::config::cfg_str(cfg, "start_level").unwrap_or_default();
+        let mut pool: Vec<String> = lib
+            .charts_in_level(table_id, &level)
+            .into_iter()
+            .filter_map(|c| c.path)
+            .collect();
+        if pool.is_empty() {
+            for lv in lib.levels(table_id) {
+                pool.extend(
+                    lib.charts_in_level(table_id, &lv)
+                        .into_iter()
+                        .filter_map(|c| c.path),
+                );
+                if !pool.is_empty() {
+                    break;
+                }
             }
         }
+        if pool.is_empty() {
+            for (tid, _) in lib.list_tables() {
+                for lv in lib.levels(tid) {
+                    pool.extend(
+                        lib.charts_in_level(tid, &lv)
+                            .into_iter()
+                            .filter_map(|c| c.path),
+                    );
+                    if !pool.is_empty() {
+                        break;
+                    }
+                }
+                if !pool.is_empty() {
+                    break;
+                }
+            }
+        }
+        if pool.is_empty() {
+            return None;
+        }
+        // 乱択 (xorshift、時刻シードで十分)
+        let mut x = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9e37_79b9_7f4a_7c15)
+            | 1;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        Some(pool[(x % pool.len() as u64) as usize].clone())
+    }
+
+    /// プレビューの背景用に bmz-player の Viewer を起動する。
+    /// -P --skip-result は one-shot Viewer (自動再生・スコア保存なし) で、
+    /// 1曲終わるとプロセスが終了する
+    fn launch_viewer(st: &State) -> Option<std::process::Child> {
+        let dir = crate::config::find_bmz_dir(&st.cfg)?;
+        let con = crate::db::open_ro(&dir.join("data").join("library.db")).ok()?;
+        let mut lib = crate::db::Library::with_connection(con).ok()?;
+        let chart = pick_random_chart(&mut lib, &st.cfg)?;
+        std::process::Command::new(dir.join("bmz-player.exe"))
+            .arg("-P")
+            .arg("--skip-result")
+            .arg(&chart)
+            .spawn()
+            .ok()
     }
 
     unsafe fn stop_preview(hwnd: HWND, st: &mut State) {
         let _ = KillTimer(hwnd, PREVIEW_TIMER_ID);
         if let Some(mut child) = st.preview.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(mut child) = st.bmz_child.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -888,7 +967,7 @@ mod win {
                 st.preview = Some(child);
                 set_text(st.h_preview, "プレビュー終了");
                 SetTimer(hwnd, PREVIEW_TIMER_ID, 400, None);
-                launch_bmz(st);
+                st.bmz_child = launch_viewer(st);
             }
         }
     }
@@ -1148,6 +1227,14 @@ mod win {
                     if let Some(st) = s.borrow_mut().as_mut() {
                         if st.preview.is_some() {
                             unsafe { write_preview(st, false) };
+                            // Viewer が曲を終えて終了していたら次のランダム譜面を流す
+                            let ended = match st.bmz_child.as_mut() {
+                                Some(c) => matches!(c.try_wait(), Ok(Some(_))),
+                                None => false,
+                            };
+                            if ended {
+                                st.bmz_child = launch_viewer(st);
+                            }
                         }
                     }
                 });
@@ -1226,7 +1313,9 @@ mod win {
                 h_pts_clear: HWND::default(),
                 h_fail_streak: HWND::default(),
                 h_preview: HWND::default(),
+                h_note: HWND::default(),
                 preview: None,
+                bmz_child: None,
                 preview_written: String::new(),
                 page_main: Vec::new(),
                 page_report: Vec::new(),
@@ -1294,6 +1383,10 @@ mod win {
                     let _ = child.kill();
                     let _ = child.wait();
                     let _ = std::fs::remove_file(crate::hud::preview_cfg_path());
+                }
+                if let Some(mut child) = st.bmz_child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
                 }
                 match st.result {
                     Some((true, persist)) => {
