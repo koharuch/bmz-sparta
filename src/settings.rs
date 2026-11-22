@@ -316,27 +316,27 @@ mod win {
                 ID_MODE,
                 font,
             );
-            label(12, 242, 176, "ゲージ");
+            label(12, 280, 176, "ゲージ");
             st.h_gauge = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
                 196,
-                242,
+                280,
                 248,
                 200,
                 ID_GAUGE,
                 font,
             );
-            label(12, 280, 176, "GAS");
+            label(12, 242, 176, "GAS");
             st.h_gas = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
                 196,
-                280,
+                242,
                 248,
                 200,
                 ID_GAS,
