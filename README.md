@@ -57,8 +57,8 @@ exe と同じフォルダに生成されます。手で編集することもで�
 | `minutes` | セッション時間 (分) | 60 |
 | `result_seconds` | 曲が終わってから (スコア保存を検知してから) 次の曲へ進むまでの秒数 | 20 |
 | `pick_mode` | 選曲方式: `priority` / `noplay_failed` / `random` | `priority` |
-| `gauge` | 起動時のゲージ上書き (例: `ex-hard`)。プロファイルは変更しない | なし |
-| `gas` | 起動時の GAS 上書き | なし |
+| `gauge` | 起動時のゲージ上書き。プロファイルは変更しない (設定GUIの既定: `ex-hard`) | `ex-hard` |
+| `gas` | 起動時の GAS 上書き (設定GUIの既定: `best-clear`) | `best-clear` |
 | `hud` | HUD を表示するか | `true` |
 | `report` | 終了時に結果レポート (HTML) を生成して開くか | `true` |
 | `up_points` / `pts_exhard` / `pts_hard` / `pts_clear` / `fail_streak` | レベル昇降ルールの上書き | 3 / 3 / 2 / 1 / 3 |

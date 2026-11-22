@@ -69,9 +69,8 @@ mod win {
     const BM_SETCHECK: u32 = 0x00F1;
     const CBN_SELCHANGE: u32 = 1;
 
-    /// (sparta.json / bmz CLI の値, 表示名)。先頭は「上書きしない」
-    const GAUGES: [(&str, &str); 7] = [
-        ("", "プロファイル設定のまま"),
+    /// (sparta.json / bmz CLI の値, 表示名)
+    const GAUGES: [(&str, &str); 6] = [
         ("assist-easy", "ASSIST EASY"),
         ("easy", "EASY"),
         ("normal", "NORMAL"),
@@ -80,9 +79,8 @@ mod win {
         ("hazard", "HAZARD"),
     ];
 
-    /// GAS は off (無効を明示) と未設定を区別する
-    const GASES: [(&str, &str); 6] = [
-        ("", "プロファイル設定のまま"),
+    /// 既定は best-clear。OFF 以外が選ばれている間はゲージをグレーアウトする
+    const GASES: [(&str, &str); 5] = [
         ("off", "OFF"),
         ("continue", "CONTINUE"),
         ("hard-to-groove", "HARD-TO-GROOVE"),
@@ -424,13 +422,19 @@ mod win {
                 combo_add(st.h_gauge, name);
             }
             let cur_gauge = cfg_str(&st.cfg, "gauge").unwrap_or_default();
-            let g_idx = GAUGES.iter().position(|(k, _)| *k == cur_gauge).unwrap_or(0);
+            let g_idx = GAUGES
+                .iter()
+                .position(|(k, _)| *k == cur_gauge)
+                .unwrap_or(4); // 既定: EX HARD
             send(st.h_gauge, CB_SETCURSEL, g_idx, 0);
             for (_, name) in GASES {
                 combo_add(st.h_gas, name);
             }
             let cur_gas = cfg_str(&st.cfg, "gas").unwrap_or_default();
-            let gas_idx = GASES.iter().position(|(k, _)| *k == cur_gas).unwrap_or(0);
+            let gas_idx = GASES
+                .iter()
+                .position(|(k, _)| *k == cur_gas)
+                .unwrap_or(3); // 既定: BEST CLEAR
             send(st.h_gas, CB_SETCURSEL, gas_idx, 0);
             update_gauge_enabled(st);
             set_check(st.h_hud, cfg_bool(&st.cfg, "hud", true));
@@ -438,11 +442,11 @@ mod win {
         });
     }
 
-    /// GAS が有効 (OFF・未設定以外) のときはゲージをグレーアウトする。
+    /// GAS が有効 (OFF 以外) のときはゲージをグレーアウトする。
     /// 保存済みのゲージ値自体は保持する
     unsafe fn update_gauge_enabled(st: &State) {
         let gas_sel = combo_sel(st.h_gas);
-        let gas_active = gas_sel >= 2;
+        let gas_active = gas_sel >= 1;
         let _ = EnableWindow(st.h_gauge, !gas_active);
     }
 
