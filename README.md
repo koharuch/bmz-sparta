@@ -58,7 +58,7 @@ exe と同じフォルダに生成されます。手で編集することもで�
 | `minutes` | セッション時間 (分) | 60 |
 | `result_seconds` | 曲と曲の間のインターバル (秒)。曲終了・スコア保存を検知してから数える | 20 |
 | `day_start_hour` | 結果レポートの日付の切り替わり (時、0-23)。この時刻までは前日分として数える | 0 |
-| `pick_mode` | 選曲方式: `priority` / `noplay_failed` / `random` | `priority` |
+| `pick_mode` | 選曲方式: `priority` (未プレイ→未クリア) / `noplay_failed` (未プレイ・FAILED→未クリア) / `random` | `priority` |
 | `gauge` | 起動時のゲージ上書き。プロファイルは変更しない (設定GUIの既定: `ex-hard`) | `ex-hard` |
 | `gas` | 起動時の GAS 上書き (設定GUIの既定: `best-clear`) | `best-clear` |
 | `hud` | HUD を表示するか | `true` |
