@@ -33,7 +33,8 @@ and it launches charts one by one, moving you up or down levels by your results.
    - bmz-player は一般的なインストール場所から自動検出します
 3. あとは自動で選曲・起動が続きます
 4. セッションが終わると、結果レポート (HTML) が自動で開きます。
-   曲ごとの結果一覧と、X へポストするためのリンクが付いています
+   曲ごとの結果一覧と、X へポストするためのリンクが付いています。
+   レポートは日単位で、同じ日のセッションは1つのファイルにマージされます
 
 初回の動作確認には `--dry-run` が使えます (DB の検出と選曲だけ表示して起動しません)。
 
@@ -56,6 +57,7 @@ exe と同じフォルダに生成されます。手で編集することもで�
 | `start_level` | 開始レベル | 初回に対話で入力 |
 | `minutes` | セッション時間 (分) | 60 |
 | `result_seconds` | 曲と曲の間のインターバル (秒)。曲終了・スコア保存を検知してから数える | 20 |
+| `day_start_hour` | 結果レポートの日付の切り替わり (時、0-23)。この時刻までは前日分として数える | 0 |
 | `pick_mode` | 選曲方式: `priority` / `noplay_failed` / `random` | `priority` |
 | `gauge` | 起動時のゲージ上書き。プロファイルは変更しない (設定GUIの既定: `ex-hard`) | `ex-hard` |
 | `gas` | 起動時の GAS 上書き (設定GUIの既定: `best-clear`) | `best-clear` |

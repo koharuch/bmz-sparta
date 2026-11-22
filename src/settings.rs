@@ -53,6 +53,7 @@ mod win {
     const ID_GAS: i32 = 107;
     const ID_HUD: i32 = 108;
     const ID_REPORT: i32 = 109;
+    const ID_DAY_START: i32 = 110;
     const ID_START: i32 = 1;
     const ID_CANCEL: i32 = 2;
 
@@ -103,6 +104,7 @@ mod win {
         h_level: HWND,
         h_minutes: HWND,
         h_result_sec: HWND,
+        h_day_start: HWND,
         h_mode: HWND,
         h_gauge: HWND,
         h_gas: HWND,
@@ -289,40 +291,53 @@ mod win {
                 ID_RESULT_SEC,
                 font,
             );
-            label(12, 192, 176, "選曲方式");
+            label(12, 192, 176, "日付の切り替わり (時)");
+            st.h_day_start = make(
+                hwnd,
+                w!("EDIT"),
+                "",
+                WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
+                196,
+                192,
+                90,
+                24,
+                ID_DAY_START,
+                font,
+            );
+            label(12, 228, 176, "選曲方式");
             st.h_mode = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
                 196,
-                192,
+                228,
                 248,
                 200,
                 ID_MODE,
                 font,
             );
-            label(12, 268, 176, "ゲージ");
+            label(12, 304, 176, "ゲージ");
             st.h_gauge = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
                 196,
-                268,
+                304,
                 248,
                 200,
                 ID_GAUGE,
                 font,
             );
-            label(12, 230, 176, "GAS");
+            label(12, 266, 176, "GAS");
             st.h_gas = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
                 196,
-                230,
+                266,
                 248,
                 200,
                 ID_GAS,
@@ -334,7 +349,7 @@ mod win {
                 "HUDを表示する",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                306,
+                342,
                 248,
                 22,
                 ID_HUD,
@@ -346,7 +361,7 @@ mod win {
                 "終了時に結果HTMLを開く",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                332,
+                368,
                 248,
                 22,
                 ID_REPORT,
@@ -358,7 +373,7 @@ mod win {
                 "開始",
                 BS_PUSHBUTTON as u32,
                 196,
-                372,
+                408,
                 110,
                 34,
                 ID_START,
@@ -370,7 +385,7 @@ mod win {
                 "キャンセル",
                 BS_PUSHBUTTON as u32,
                 334,
-                372,
+                408,
                 110,
                 34,
                 ID_CANCEL,
@@ -396,6 +411,10 @@ mod win {
             set_text(
                 st.h_result_sec,
                 &cfg_i64(&st.cfg, "result_seconds").unwrap_or(20).to_string(),
+            );
+            set_text(
+                st.h_day_start,
+                &cfg_i64(&st.cfg, "day_start_hour").unwrap_or(0).to_string(),
             );
             for (_, name) in MODES {
                 combo_add(st.h_mode, name);
@@ -459,6 +478,8 @@ mod win {
         cfg_set(&mut st.cfg, "minutes", json!(minutes.max(1)));
         let rs: i64 = get_text(st.h_result_sec).trim().parse().unwrap_or(20);
         cfg_set(&mut st.cfg, "result_seconds", json!(rs.max(0)));
+        let dsh: i64 = get_text(st.h_day_start).trim().parse().unwrap_or(0);
+        cfg_set(&mut st.cfg, "day_start_hour", json!(dsh.clamp(0, 23)));
         let m_sel = combo_sel(st.h_mode);
         if m_sel >= 0 && (m_sel as usize) < MODES.len() {
             cfg_set(&mut st.cfg, "pick_mode", json!(MODES[m_sel as usize].0));
@@ -571,6 +592,7 @@ mod win {
                 h_level: HWND::default(),
                 h_minutes: HWND::default(),
                 h_result_sec: HWND::default(),
+                h_day_start: HWND::default(),
                 h_mode: HWND::default(),
                 h_gauge: HWND::default(),
                 h_gas: HWND::default(),
@@ -606,7 +628,7 @@ mod win {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 480,
-                480,
+                516,
                 None,
                 None,
                 hinst,

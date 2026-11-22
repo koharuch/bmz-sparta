@@ -519,8 +519,13 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
             .iter()
             .filter_map(|l| bucket_counts.get(l).map(|n| (l.to_string(), *n)))
             .collect();
+        let end_now = now_secs();
+        let day_start_hour = cfg_i64(&cfg, "day_start_hour").unwrap_or(0);
+        let (day_key, date_label) = crate::report::logical_day(end_now, day_start_hour);
         let rep = crate::report::SessionReport {
-            ended_unix: now_secs(),
+            ended_unix: end_now,
+            date_label,
+            day_key,
             table: table_label.clone(),
             start_level: level_label(&levels[start_level_idx]),
             final_level: level_label(&levels[level_idx]),
@@ -530,7 +535,7 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
             lamp_counts,
             songs: history,
         };
-        if let Some(p) = crate::report::generate(&rep) {
+        if let Some(p) = crate::report::merge_and_generate(&rep) {
             println!("結果レポート: {}", p.display());
             crate::report::open_in_browser(&p);
         }
