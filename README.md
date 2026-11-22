@@ -63,6 +63,18 @@ exe と同じフォルダに生成されます。手で編集することもで�
 | `gas` | 起動時の GAS 上書き (設定GUIの既定: `best-clear`) | `best-clear` |
 | `hud` | HUD を表示するか | `true` |
 | `report` | 終了時に結果レポート (HTML) を生成して開くか | `true` |
+| `hud_anchor` | HUDの表示位置: `custom` (hud-pos.json) / `tl` / `tr` / `bl` / `br` | `custom` |
+| `hud_width` | HUDの幅 (px) | 460 |
+| `hud_bg_alpha` | HUD背景の濃さ (0-255) | 26 |
+| `hud_show_best` | HUDに「この曲のベスト・結果」を表示するか | `true` |
+| `hud_show_legend` | HUDにルール凡例を表示するか | `true` |
+| `hud_show_remain` | HUDに残り時間を表示するか | `true` |
+| `hud_show_countdown` | HUDに次の曲までのカウントダウンを表示するか | `true` |
+| `up_points` | レベルアップに必要な pt | 3 |
+| `pts_exhard` | EX HARD CLEAR 以上で得る pt | 3 |
+| `pts_hard` | HARD CLEAR で得る pt | 2 |
+| `pts_clear` | CLEAR / EASY CLEAR で得る pt | 1 |
+| `fail_streak` | レベルダウンする連続 FAILED 数 | 3 |
 | `up_points` / `pts_exhard` / `pts_hard` / `pts_clear` / `fail_streak` | レベル昇降ルールの上書き | 3 / 3 / 2 / 1 / 3 |
 
 HUD の表示位置は `hud-pos.json` (`{"x":…, "y":…, "w":…, "h":…}`) で変更できます。

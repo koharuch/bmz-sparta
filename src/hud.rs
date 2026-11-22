@@ -1,7 +1,9 @@
 //! スパルタ HUD: sparta-status.json を読んで最前面に状態を表示する。
 //! Win32 レイヤードウィンドウ (UpdateLayeredWindow) でピクセル単位の透過。
-//! 背景は黒の極薄 (alpha 26/255)、文字・バーは不透明。
-//! 位置・サイズは hud-pos.json の矩形で FIX (入力は受けない)。
+//! 背景は黒の薄いアルファ (既定 26/255、sparta.json の hud_bg_alpha で変更可)。
+//! 位置は hud_anchor (四隅プリセット) または hud-pos.json の矩形 (custom)。
+//! 表示項目・幅・背景の濃さは sparta.json の hud_* キーで調整できる
+//! (設定GUIの「HUD」タブから変更可能)。
 //!
 //! 描画は GDI で DIB へ行い、最後にアルファを整える
 //! (黒でない画素 = 不透明、黒 = 背景アルファ)。
@@ -36,7 +38,9 @@ mod win {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use windows::core::{w, PCWSTR};
-    use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
+    use windows::Win32::Foundation::{
+        COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+    };
     use windows::Win32::Graphics::Gdi::*;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::*;
@@ -68,6 +72,10 @@ mod win {
         h: i32,
         s: f64,
         fonts: HashMap<i32, Fonts>,
+        show_best: bool,
+        show_legend: bool,
+        show_remain: bool,
+        show_countdown: bool,
     }
 
     impl Renderer {
@@ -78,6 +86,10 @@ mod win {
                 h,
                 s,
                 fonts: HashMap::new(),
+                show_best: true,
+                show_legend: true,
+                show_remain: true,
+                show_countdown: true,
             }
         }
 
@@ -100,7 +112,7 @@ mod win {
                         0, // CLIP_DEFAULT_PRECIS
                         4, // ANTIALIASED_QUALITY
                         0, // DEFAULT_PITCH
-                        w!("MS Gothic"),
+                        w!("Yu Gothic UI"),
                     )
                 };
                 Fonts {
@@ -187,10 +199,14 @@ mod win {
                 ));
                 lines.push(("おつかれさまでした".into(), SUB, None));
             } else {
-                let remain = st.get("deadline").and_then(|v| v.as_i64()).map(|d| {
-                    let sec = (d - now_secs() as i64).max(0);
-                    format!("残り {}:{:02}", sec / 60, sec % 60)
-                });
+                let remain = if self.show_remain {
+                    st.get("deadline").and_then(|v| v.as_i64()).map(|d| {
+                        let sec = (d - now_secs() as i64).max(0);
+                        format!("残り {}:{:02}", sec / 60, sec % 60)
+                    })
+                } else {
+                    None
+                };
                 lines.push((
                     format!("現在のターゲット　{}", get_s("table")),
                     FG,
@@ -209,7 +225,7 @@ mod win {
                 ));
                 lines.push((String::new(), FG, None));
                 // ベスト/結果ブロックは常に4行固定 (縦位置をずらさない)
-                if result && !get_s("last_lamp").is_empty() {
+                if self.show_best && result && !get_s("last_lamp").is_empty() {
                     let lamp = get_s("last_lamp");
                     let col = if lamp == "FAILED" { RED } else { FG };
                     let mut combo = lamp.clone();
@@ -229,7 +245,7 @@ mod win {
                     lines.push((combo, col, None));
                     lines.push((String::new(), FG, None));
                     lines.push((String::new(), FG, None));
-                } else {
+                } else if self.show_best {
                     lines.push(("この曲のベスト".into(), FG, None));
                     if !get_s("prev_lamp").is_empty() {
                         let mut combo = get_s("prev_lamp");
@@ -278,7 +294,7 @@ mod win {
                 ));
                 lines.push((String::new(), FG, None));
             }
-            let countdown = if !ended && result {
+            let countdown = if !ended && result && self.show_countdown {
                 st.get("skip_deadline").and_then(|v| v.as_i64()).map(|d| {
                     let left = (d as f64 - now_secs()).max(0.0);
                     format!("次の曲まで あと {} 秒", (left + 0.999) as i64)
@@ -310,14 +326,39 @@ mod win {
                     }
                     y += lh;
                 }
-                if !ended {
+                if !ended && self.show_legend {
+                    let pe = if st.get("pts_exhard").is_some() {
+                        get_i("pts_exhard")
+                    } else {
+                        3
+                    };
+                    let ph = if st.get("pts_hard").is_some() {
+                        get_i("pts_hard")
+                    } else {
+                        2
+                    };
+                    let pc = if st.get("pts_clear").is_some() {
+                        get_i("pts_clear")
+                    } else {
+                        1
+                    };
+                    let up = if st.get("up_points").is_some() {
+                        get_i("up_points")
+                    } else {
+                        3
+                    };
+                    let fs = if st.get("lose_max").is_some() {
+                        get_i("lose_max")
+                    } else {
+                        3
+                    };
                     for line in [
-                        "+3pt　EX HARD CLEAR以上",
-                        "+2pt　HARD CLEAR",
-                        "+1pt　CLEAR / EASY CLEAR",
-                        "3pt でレベルアップ ／ 3連敗でレベルダウン",
+                        format!("+{pe}pt　EX HARD CLEAR以上"),
+                        format!("+{ph}pt　HARD CLEAR"),
+                        format!("+{pc}pt　CLEAR / EASY CLEAR"),
+                        format!("{up}pt でレベルアップ ／ {fs}連敗でレベルダウン"),
                     ] {
-                        self.text(dc, pad, y, line, legend, SUB, false, pad);
+                        self.text(dc, pad, y, &line, legend, SUB, false, pad);
                         y += legend_step;
                     }
                 }
@@ -346,6 +387,7 @@ mod win {
         y: i32,
         w: i32,
         h: i32,
+        bg_alpha: u8,
         renderer: Renderer,
         ended_at: Option<f64>,
     }
@@ -417,7 +459,7 @@ mod win {
                     ReleaseDC(None, screen_dc);
                     return;
                 }
-                // 背景: 黒 + alpha 26 で初期化
+                // 背景: 黒 + bg_alpha で初期化
                 let pixels = std::slice::from_raw_parts_mut(
                     ptr as *mut u8,
                     (w * hh * 4) as usize,
@@ -426,7 +468,7 @@ mod win {
                     px[0] = 0;
                     px[1] = 0;
                     px[2] = 0;
-                    px[3] = BG_ALPHA;
+                    px[3] = h.bg_alpha;
                 }
                 let old = SelectObject(mem_dc, HGDIOBJ(hbmp.0));
                 h.renderer.render(mem_dc, st);
@@ -435,7 +477,7 @@ mod win {
                     if px[0] != 0 || px[1] != 0 || px[2] != 0 {
                         px[3] = 255;
                     } else {
-                        px[3] = BG_ALPHA;
+                        px[3] = h.bg_alpha;
                     }
                 }
                 let dst = POINT { x: h.x, y: h.y };
@@ -495,14 +537,55 @@ mod win {
             .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
             .unwrap_or(Value::Null);
         let gi = |k: &str, d: i32| saved.get(k).and_then(|v| v.as_i64()).unwrap_or(d as i64) as i32;
-        let (x, y, w, h) = (gi("x", 1180), gi("y", 310), gi("w", 460), gi("h", 400));
+        let (mut x, mut y, mut w, h) = (gi("x", 1180), gi("y", 310), gi("w", 460), gi("h", 400));
+        // sparta.json の hud_* 設定を反映する
+        let cfg = crate::config::load_config();
+        if let Some(cw) = crate::config::cfg_i64(&cfg, "hud_width") {
+            w = (cw as i32).clamp(240, 1200);
+        }
+        let bg_alpha = crate::config::cfg_i64(&cfg, "hud_bg_alpha")
+            .unwrap_or(BG_ALPHA as i64)
+            .clamp(0, 255) as u8;
+        let anchor = crate::config::cfg_str(&cfg, "hud_anchor")
+            .unwrap_or_else(|| "custom".to_string());
+        if anchor != "custom" {
+            unsafe {
+                let mut rc = RECT::default();
+                if SystemParametersInfoW(
+                    SPI_GETWORKAREA,
+                    0,
+                    Some(&mut rc as *mut RECT as *mut std::ffi::c_void),
+                    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+                )
+                .is_ok()
+                {
+                    const MARGIN: i32 = 16;
+                    x = if anchor.ends_with('l') {
+                        rc.left + MARGIN
+                    } else {
+                        rc.right - w - MARGIN
+                    };
+                    y = if anchor.starts_with('t') {
+                        rc.top + MARGIN
+                    } else {
+                        rc.bottom - h - MARGIN
+                    };
+                }
+            }
+        }
+        let mut renderer = Renderer::new(w, h);
+        renderer.show_best = crate::config::cfg_bool(&cfg, "hud_show_best", true);
+        renderer.show_legend = crate::config::cfg_bool(&cfg, "hud_show_legend", true);
+        renderer.show_remain = crate::config::cfg_bool(&cfg, "hud_show_remain", true);
+        renderer.show_countdown = crate::config::cfg_bool(&cfg, "hud_show_countdown", true);
         STATE.with(|s| {
             *s.borrow_mut() = Some(HudState {
                 x,
                 y,
                 w,
                 h,
-                renderer: Renderer::new(w, h),
+                bg_alpha,
+                renderer,
                 ended_at: None,
             });
         });

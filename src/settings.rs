@@ -63,6 +63,18 @@ mod win {
     const ID_DAY_START: i32 = 110;
     const ID_TAB: i32 = 111;
     const ID_BROWSE: i32 = 112;
+    const ID_HUD_ANCHOR: i32 = 113;
+    const ID_HUD_WIDTH: i32 = 114;
+    const ID_HUD_ALPHA: i32 = 115;
+    const ID_HUD_BEST: i32 = 116;
+    const ID_HUD_LEGEND: i32 = 117;
+    const ID_HUD_REMAIN: i32 = 118;
+    const ID_HUD_COUNTDOWN: i32 = 119;
+    const ID_UP_POINTS: i32 = 120;
+    const ID_PTS_EXHARD: i32 = 121;
+    const ID_PTS_HARD: i32 = 122;
+    const ID_PTS_CLEAR: i32 = 123;
+    const ID_FAIL_STREAK: i32 = 124;
     const ID_START: i32 = 1;
     const ID_CANCEL: i32 = 2;
 
@@ -111,6 +123,15 @@ mod win {
         ("random", "ランダム"),
     ];
 
+    /// HUD の表示位置プリセット (sparta.json の hud_anchor 値, 表示名)
+    const HUD_ANCHORS: [(&str, &str); 5] = [
+        ("custom", "カスタム (hud-pos.json)"),
+        ("tl", "左上"),
+        ("tr", "右上"),
+        ("bl", "左下"),
+        ("br", "右下"),
+    ];
+
     struct State {
         cfg: Value,
         bmz_label: String,
@@ -128,8 +149,22 @@ mod win {
         h_report: HWND,
         h_tab: HWND,
         h_bmz_label: HWND,
+        h_anchor: HWND,
+        h_hud_w: HWND,
+        h_hud_alpha: HWND,
+        h_best: HWND,
+        h_legend: HWND,
+        h_remain: HWND,
+        h_countdown: HWND,
+        h_up_points: HWND,
+        h_pts_exhard: HWND,
+        h_pts_hard: HWND,
+        h_pts_clear: HWND,
+        h_fail_streak: HWND,
         page_main: Vec<HWND>,
         page_report: Vec<HWND>,
+        page_hud: Vec<HWND>,
+        page_adv: Vec<HWND>,
         result: Option<bool>,
     }
 
@@ -284,7 +319,7 @@ mod win {
                 ID_TAB,
                 font,
             );
-            for (i, name) in ["プレイ", "レポート"].iter().enumerate() {
+            for (i, name) in ["プレイ", "レポート", "HUD", "詳細"].iter().enumerate() {
                 let mut text: Vec<u16> =
                     name.encode_utf16().chain(std::iter::once(0)).collect();
                 let item = TCITEMW {
@@ -404,7 +439,7 @@ mod win {
                 "HUDを表示する",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                378,
+                84,
                 248,
                 22,
                 ID_HUD,
@@ -420,6 +455,160 @@ mod win {
                 248,
                 22,
                 ID_REPORT,
+                font,
+            );
+            // ---- HUDタブ ----
+            label(&mut st.page_hud, 12, 124, 176, "表示位置");
+            st.h_anchor = make(
+                hwnd,
+                w!("COMBOBOX"),
+                "",
+                CBS_DROPDOWNLIST as u32,
+                196,
+                124,
+                248,
+                200,
+                ID_HUD_ANCHOR,
+                font,
+            );
+            label(&mut st.page_hud, 12, 162, 176, "幅 (px)");
+            st.h_hud_w = make(
+                hwnd,
+                w!("EDIT"),
+                "",
+                WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
+                196,
+                162,
+                90,
+                24,
+                ID_HUD_WIDTH,
+                font,
+            );
+            label(&mut st.page_hud, 12, 200, 176, "背景の濃さ (0-255)");
+            st.h_hud_alpha = make(
+                hwnd,
+                w!("EDIT"),
+                "",
+                WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
+                196,
+                200,
+                90,
+                24,
+                ID_HUD_ALPHA,
+                font,
+            );
+            st.h_best = make(
+                hwnd,
+                w!("BUTTON"),
+                "この曲のベスト・結果を表示",
+                BS_AUTOCHECKBOX as u32,
+                196,
+                244,
+                248,
+                22,
+                ID_HUD_BEST,
+                font,
+            );
+            st.h_legend = make(
+                hwnd,
+                w!("BUTTON"),
+                "ルール凡例を表示",
+                BS_AUTOCHECKBOX as u32,
+                196,
+                272,
+                248,
+                22,
+                ID_HUD_LEGEND,
+                font,
+            );
+            st.h_remain = make(
+                hwnd,
+                w!("BUTTON"),
+                "残り時間を表示",
+                BS_AUTOCHECKBOX as u32,
+                196,
+                300,
+                248,
+                22,
+                ID_HUD_REMAIN,
+                font,
+            );
+            st.h_countdown = make(
+                hwnd,
+                w!("BUTTON"),
+                "次の曲までのカウントダウンを表示",
+                BS_AUTOCHECKBOX as u32,
+                196,
+                328,
+                248,
+                22,
+                ID_HUD_COUNTDOWN,
+                font,
+            );
+            // ---- 詳細タブ (レベル昇降ルール) ----
+            label(&mut st.page_adv, 12, 84, 176, "レベルアップに必要な pt");
+            st.h_up_points = make(
+                hwnd,
+                w!("EDIT"),
+                "",
+                WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
+                196,
+                84,
+                90,
+                24,
+                ID_UP_POINTS,
+                font,
+            );
+            label(&mut st.page_adv, 12, 122, 176, "EX HARD CLEAR 以上の pt");
+            st.h_pts_exhard = make(
+                hwnd,
+                w!("EDIT"),
+                "",
+                WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
+                196,
+                122,
+                90,
+                24,
+                ID_PTS_EXHARD,
+                font,
+            );
+            label(&mut st.page_adv, 12, 160, 176, "HARD CLEAR の pt");
+            st.h_pts_hard = make(
+                hwnd,
+                w!("EDIT"),
+                "",
+                WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
+                196,
+                160,
+                90,
+                24,
+                ID_PTS_HARD,
+                font,
+            );
+            label(&mut st.page_adv, 12, 198, 176, "CLEAR / EASY CLEAR の pt");
+            st.h_pts_clear = make(
+                hwnd,
+                w!("EDIT"),
+                "",
+                WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
+                196,
+                198,
+                90,
+                24,
+                ID_PTS_CLEAR,
+                font,
+            );
+            label(&mut st.page_adv, 12, 236, 176, "レベルダウンする連敗数");
+            st.h_fail_streak = make(
+                hwnd,
+                w!("EDIT"),
+                "",
+                WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
+                196,
+                236,
+                90,
+                24,
+                ID_FAIL_STREAK,
                 font,
             );
             make(
@@ -471,6 +660,48 @@ mod win {
                 st.h_day_start,
                 &cfg_i64(&st.cfg, "day_start_hour").unwrap_or(0).to_string(),
             );
+            for (_, name) in HUD_ANCHORS {
+                combo_add(st.h_anchor, name);
+            }
+            let cur_anchor =
+                cfg_str(&st.cfg, "hud_anchor").unwrap_or_else(|| "custom".into());
+            let a_idx = HUD_ANCHORS
+                .iter()
+                .position(|(k, _)| *k == cur_anchor)
+                .unwrap_or(0);
+            send(st.h_anchor, CB_SETCURSEL, a_idx, 0);
+            set_text(
+                st.h_hud_w,
+                &cfg_i64(&st.cfg, "hud_width").unwrap_or(460).to_string(),
+            );
+            set_text(
+                st.h_hud_alpha,
+                &cfg_i64(&st.cfg, "hud_bg_alpha").unwrap_or(26).to_string(),
+            );
+            set_check(st.h_best, cfg_bool(&st.cfg, "hud_show_best", true));
+            set_check(st.h_legend, cfg_bool(&st.cfg, "hud_show_legend", true));
+            set_check(st.h_remain, cfg_bool(&st.cfg, "hud_show_remain", true));
+            set_check(st.h_countdown, cfg_bool(&st.cfg, "hud_show_countdown", true));
+            set_text(
+                st.h_up_points,
+                &cfg_i64(&st.cfg, "up_points").unwrap_or(3).to_string(),
+            );
+            set_text(
+                st.h_pts_exhard,
+                &cfg_i64(&st.cfg, "pts_exhard").unwrap_or(3).to_string(),
+            );
+            set_text(
+                st.h_pts_hard,
+                &cfg_i64(&st.cfg, "pts_hard").unwrap_or(2).to_string(),
+            );
+            set_text(
+                st.h_pts_clear,
+                &cfg_i64(&st.cfg, "pts_clear").unwrap_or(1).to_string(),
+            );
+            set_text(
+                st.h_fail_streak,
+                &cfg_i64(&st.cfg, "fail_streak").unwrap_or(3).to_string(),
+            );
             for (_, name) in MODES {
                 combo_add(st.h_mode, name);
             }
@@ -510,9 +741,25 @@ mod win {
                 st.h_mode,
                 st.h_gas,
                 st.h_gauge,
-                st.h_hud,
             ]);
             st.page_report.extend([st.h_report, st.h_day_start]);
+            st.page_hud.extend([
+                st.h_hud,
+                st.h_anchor,
+                st.h_hud_w,
+                st.h_hud_alpha,
+                st.h_best,
+                st.h_legend,
+                st.h_remain,
+                st.h_countdown,
+            ]);
+            st.page_adv.extend([
+                st.h_up_points,
+                st.h_pts_exhard,
+                st.h_pts_hard,
+                st.h_pts_clear,
+                st.h_fail_streak,
+            ]);
             show_page(st, 0);
         });
     }
@@ -524,6 +771,12 @@ mod win {
         }
         for h in &st.page_report {
             let _ = ShowWindow(*h, if page == 1 { SW_SHOW } else { SW_HIDE });
+        }
+        for h in &st.page_hud {
+            let _ = ShowWindow(*h, if page == 2 { SW_SHOW } else { SW_HIDE });
+        }
+        for h in &st.page_adv {
+            let _ = ShowWindow(*h, if page == 3 { SW_SHOW } else { SW_HIDE });
         }
     }
 
@@ -641,6 +894,28 @@ mod win {
         cfg_set(&mut st.cfg, "result_seconds", json!(rs.max(0)));
         let dsh: i64 = get_text(st.h_day_start).trim().parse().unwrap_or(0);
         cfg_set(&mut st.cfg, "day_start_hour", json!(dsh.clamp(0, 23)));
+        let a_sel = combo_sel(st.h_anchor);
+        if a_sel >= 0 && (a_sel as usize) < HUD_ANCHORS.len() {
+            cfg_set(&mut st.cfg, "hud_anchor", json!(HUD_ANCHORS[a_sel as usize].0));
+        }
+        let hw: i64 = get_text(st.h_hud_w).trim().parse().unwrap_or(460);
+        cfg_set(&mut st.cfg, "hud_width", json!(hw.clamp(240, 1200)));
+        let ha: i64 = get_text(st.h_hud_alpha).trim().parse().unwrap_or(26);
+        cfg_set(&mut st.cfg, "hud_bg_alpha", json!(ha.clamp(0, 255)));
+        cfg_set(&mut st.cfg, "hud_show_best", json!(checked(st.h_best)));
+        cfg_set(&mut st.cfg, "hud_show_legend", json!(checked(st.h_legend)));
+        cfg_set(&mut st.cfg, "hud_show_remain", json!(checked(st.h_remain)));
+        cfg_set(&mut st.cfg, "hud_show_countdown", json!(checked(st.h_countdown)));
+        let up: i64 = get_text(st.h_up_points).trim().parse().unwrap_or(3);
+        cfg_set(&mut st.cfg, "up_points", json!(up.clamp(1, 99)));
+        let pe: i64 = get_text(st.h_pts_exhard).trim().parse().unwrap_or(3);
+        cfg_set(&mut st.cfg, "pts_exhard", json!(pe.clamp(0, 99)));
+        let ph: i64 = get_text(st.h_pts_hard).trim().parse().unwrap_or(2);
+        cfg_set(&mut st.cfg, "pts_hard", json!(ph.clamp(0, 99)));
+        let pc: i64 = get_text(st.h_pts_clear).trim().parse().unwrap_or(1);
+        cfg_set(&mut st.cfg, "pts_clear", json!(pc.clamp(0, 99)));
+        let fs: i64 = get_text(st.h_fail_streak).trim().parse().unwrap_or(3);
+        cfg_set(&mut st.cfg, "fail_streak", json!(fs.clamp(1, 99)));
         let m_sel = combo_sel(st.h_mode);
         if m_sel >= 0 && (m_sel as usize) < MODES.len() {
             cfg_set(&mut st.cfg, "pick_mode", json!(MODES[m_sel as usize].0));
@@ -783,8 +1058,22 @@ mod win {
                 h_day_start: HWND::default(),
                 h_tab: HWND::default(),
                 h_bmz_label: HWND::default(),
+                h_anchor: HWND::default(),
+                h_hud_w: HWND::default(),
+                h_hud_alpha: HWND::default(),
+                h_best: HWND::default(),
+                h_legend: HWND::default(),
+                h_remain: HWND::default(),
+                h_countdown: HWND::default(),
+                h_up_points: HWND::default(),
+                h_pts_exhard: HWND::default(),
+                h_pts_hard: HWND::default(),
+                h_pts_clear: HWND::default(),
+                h_fail_streak: HWND::default(),
                 page_main: Vec::new(),
                 page_report: Vec::new(),
+                page_hud: Vec::new(),
+                page_adv: Vec::new(),
                 h_mode: HWND::default(),
                 h_gauge: HWND::default(),
                 h_gas: HWND::default(),
