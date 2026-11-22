@@ -38,6 +38,9 @@ mod win {
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::Graphics::Gdi::*;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::HiDpi::{
+        SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
     use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
     use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -229,59 +232,59 @@ mod win {
                 w!("STATIC"),
                 &format!("bmz-player: {}", st.bmz_label),
                 0,
-                16,
                 12,
-                420,
+                12,
+                440,
                 20,
                 0,
                 font,
             );
-            label(16, 44, 130, "難易度表");
+            label(12, 44, 176, "難易度表");
             st.h_table = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 (CBS_DROPDOWNLIST as u32) | WS_VSCROLL.0,
-                154,
+                196,
                 44,
-                290,
+                248,
                 200,
                 ID_TABLE,
                 font,
             );
-            label(16, 82, 130, "開始レベル");
+            label(12, 82, 176, "開始レベル");
             st.h_level = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 (CBS_DROPDOWNLIST as u32) | WS_VSCROLL.0,
-                154,
+                196,
                 82,
-                290,
+                248,
                 200,
                 ID_LEVEL,
                 font,
             );
-            label(16, 120, 130, "セッション時間 (分)");
+            label(12, 120, 176, "セッション時間 (分)");
             st.h_minutes = make(
                 hwnd,
                 w!("EDIT"),
                 "",
                 WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
-                154,
+                196,
                 120,
                 90,
                 24,
                 ID_MINUTES,
                 font,
             );
-            label(16, 156, 130, "次の曲までの待機 (秒)");
+            label(12, 156, 176, "次の曲までの待機 (秒)");
             st.h_result_sec = make(
                 hwnd,
                 w!("EDIT"),
                 "",
                 WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
-                154,
+                196,
                 156,
                 90,
                 24,
@@ -293,48 +296,48 @@ mod win {
                 w!("STATIC"),
                 "(曲が終わった時点から数えます)",
                 0,
-                252,
-                159,
-                200,
-                20,
+                196,
+                182,
+                248,
+                18,
                 0,
                 font,
             );
-            label(16, 192, 130, "選曲方式");
+            label(12, 204, 176, "選曲方式");
             st.h_mode = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
-                154,
-                192,
-                290,
+                196,
+                204,
+                248,
                 200,
                 ID_MODE,
                 font,
             );
-            label(16, 230, 130, "ゲージ");
+            label(12, 242, 176, "ゲージ");
             st.h_gauge = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
-                154,
-                230,
-                290,
+                196,
+                242,
+                248,
                 200,
                 ID_GAUGE,
                 font,
             );
-            label(16, 268, 130, "GAS");
+            label(12, 280, 176, "GAS");
             st.h_gas = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
-                154,
-                268,
-                290,
+                196,
+                280,
+                248,
                 200,
                 ID_GAS,
                 font,
@@ -344,9 +347,9 @@ mod win {
                 w!("BUTTON"),
                 "HUDを表示する",
                 BS_AUTOCHECKBOX as u32,
-                154,
-                306,
-                290,
+                196,
+                318,
+                248,
                 22,
                 ID_HUD,
                 font,
@@ -356,9 +359,9 @@ mod win {
                 w!("BUTTON"),
                 "終了時に結果HTMLを開く",
                 BS_AUTOCHECKBOX as u32,
-                154,
-                332,
-                290,
+                196,
+                344,
+                248,
                 22,
                 ID_REPORT,
                 font,
@@ -368,9 +371,9 @@ mod win {
                 w!("BUTTON"),
                 "開始",
                 BS_PUSHBUTTON as u32,
-                154,
-                372,
-                130,
+                196,
+                384,
+                110,
                 34,
                 ID_START,
                 font,
@@ -380,9 +383,9 @@ mod win {
                 w!("BUTTON"),
                 "キャンセル",
                 BS_PUSHBUTTON as u32,
-                314,
-                372,
-                130,
+                334,
+                384,
+                110,
                 34,
                 ID_CANCEL,
                 font,
@@ -560,6 +563,11 @@ mod win {
     ) -> Option<bool> {
         if tables.is_empty() {
             return None;
+        }
+        unsafe {
+            let _ = SetProcessDpiAwarenessContext(
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            );
         }
         STATE.with(|s| {
             *s.borrow_mut() = Some(State {
