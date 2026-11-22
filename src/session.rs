@@ -163,11 +163,40 @@ fn wait_with_result_timeout(
     let _ = child.wait();
 }
 
+/// bmz_dir から library / score / 難易度表を開く。
+/// Err はそのまま表示できる日本語メッセージ
+fn open_env(
+    bmz_dir: &std::path::Path,
+    cfg: &Value,
+) -> Result<(Library, Scores, Vec<(i64, String)>), String> {
+    let lib_db = bmz_dir.join("data").join("library.db");
+    if !lib_db.exists() {
+        return Err(format!(
+            "library.db が見つかりません: {}",
+            lib_db.display()
+        ));
+    }
+    let score_db = find_score_db(bmz_dir, cfg)
+        .ok_or_else(|| "score.db が見つかりませんでした。".to_string())?;
+    println!("score   : {}", score_db.display());
+    let mut lib = Library::open(&lib_db)
+        .map_err(|e| format!("library.db を開けませんでした: {e}"))?;
+    let scores = Scores::open(&score_db)
+        .map_err(|e| format!("score.db を開けませんでした: {e}"))?;
+    let tables = lib.list_tables();
+    if tables.is_empty() {
+        return Err(
+            "難易度表が登録されていません。bmz-player で表を追加してください。".into(),
+        );
+    }
+    Ok((lib, scores, tables))
+}
+
 pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
     let mut cfg = if setup { json!({}) } else { load_config() };
     let rules = Rules::from_config(&cfg);
 
-    let bmz_dir = match find_bmz_dir(&cfg) {
+    let mut bmz_dir = match find_bmz_dir(&cfg) {
         Some(d) => d,
         None => {
             let p = ask("bmz-player.exe のあるフォルダをフルパスで入力: ", None);
@@ -183,43 +212,16 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
         }
     };
     cfg_set(&mut cfg, "bmz_dir", json!(bmz_dir.to_string_lossy()));
-    let exe = bmz_dir.join("bmz-player.exe");
-    let lib_db = bmz_dir.join("data").join("library.db");
-    if !lib_db.exists() {
-        println!("library.db が見つかりません: {}", lib_db.display());
-        return 1;
-    }
-    let score_db = match find_score_db(&bmz_dir, &cfg) {
-        Some(p) => p,
-        None => {
-            println!("score.db が見つかりませんでした。");
-            return 1;
-        }
-    };
+    let mut exe = bmz_dir.join("bmz-player.exe");
     println!("bmz_dir : {}", bmz_dir.display());
-    println!("library : {}", lib_db.display());
-    println!("score   : {}", score_db.display());
-
-    let mut lib = match Library::open(&lib_db) {
-        Ok(l) => l,
-        Err(e) => {
-            println!("library.db を開けませんでした: {e}");
+    println!("library : {}", bmz_dir.join("data").join("library.db").display());
+    let (mut lib, mut scores, mut table_list) = match open_env(&bmz_dir, &cfg) {
+        Ok(v) => v,
+        Err(m) => {
+            println!("{m}");
             return 1;
         }
     };
-    let scores = match Scores::open(&score_db) {
-        Ok(s) => s,
-        Err(e) => {
-            println!("score.db を開けませんでした: {e}");
-            return 1;
-        }
-    };
-
-    let table_list = lib.list_tables();
-    if table_list.is_empty() {
-        println!("難易度表が登録されていません。bmz-player で表を追加してください。");
-        return 1;
-    }
     // 設定GUI (Windows)。キャンセルされたら終了、使えなければ対話へ落とす
     let mut gui_done = false;
     if !dry && !console {
@@ -242,6 +244,28 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
                 return 0;
             }
             None => {}
+        }
+    }
+    // GUIで別のインストールが選ばれた場合は読み直す
+    if gui_done {
+        if let Some(nd) = cfg_str(&cfg, "bmz_dir") {
+            let nd = std::path::PathBuf::from(nd);
+            if nd != bmz_dir {
+                match open_env(&nd, &cfg) {
+                    Ok((l, s, t)) => {
+                        println!("bmz_dir : {}", nd.display());
+                        bmz_dir = nd;
+                        exe = bmz_dir.join("bmz-player.exe");
+                        lib = l;
+                        scores = s;
+                        table_list = t;
+                    }
+                    Err(m) => {
+                        println!("{m}");
+                        return 1;
+                    }
+                }
+            }
         }
     }
     if !gui_done && (cfg.get("table_id").is_none() || setup) {

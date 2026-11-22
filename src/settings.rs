@@ -38,7 +38,13 @@ mod win {
     use windows::Win32::UI::Controls::{NMHDR, TCITEMHEADERA_MASK, TCITEMW};
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::Graphics::Gdi::*;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+    };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
+    };
     use windows::Win32::UI::HiDpi::{
         SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     };
@@ -56,6 +62,7 @@ mod win {
     const ID_REPORT: i32 = 109;
     const ID_DAY_START: i32 = 110;
     const ID_TAB: i32 = 111;
+    const ID_BROWSE: i32 = 112;
     const ID_START: i32 = 1;
     const ID_CANCEL: i32 = 2;
 
@@ -120,6 +127,7 @@ mod win {
         h_hud: HWND,
         h_report: HWND,
         h_tab: HWND,
+        h_bmz_label: HWND,
         page_main: Vec<HWND>,
         page_report: Vec<HWND>,
         result: Option<bool>,
@@ -239,16 +247,28 @@ mod win {
             let label = |page: &mut Vec<HWND>, x: i32, y: i32, w: i32, text: &str| {
                 page.push(make(hwnd, w!("STATIC"), text, 0, x, y + 3, w, 20, 0, font));
             };
-            make(
+            st.h_bmz_label = make(
                 hwnd,
                 w!("STATIC"),
                 &format!("bmz-player: {}", st.bmz_label),
                 0,
                 12,
-                12,
-                440,
+                14,
+                348,
                 20,
                 0,
+                font,
+            );
+            make(
+                hwnd,
+                w!("BUTTON"),
+                "参照...",
+                BS_PUSHBUTTON as u32,
+                368,
+                9,
+                84,
+                26,
+                ID_BROWSE,
                 font,
             );
             // タブ: 「プレイ」= セッション設定、「レポート」= HTML出力まわり
@@ -507,6 +527,89 @@ mod win {
         }
     }
 
+    unsafe fn message_box(hwnd: HWND, text: &str, caption: &str) {
+        let t: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let c: Vec<u16> = caption.encode_utf16().chain(std::iter::once(0)).collect();
+        let _ = MessageBoxW(
+            hwnd,
+            PCWSTR(t.as_ptr()),
+            PCWSTR(c.as_ptr()),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+
+    /// 「参照...」: bmz-player のインストールフォルダを選び直す。
+    /// 複数インストール (バージョン違い等) がある人向けの手動指定
+    unsafe fn browse_bmz_dir(hwnd: HWND, st: &mut State) {
+        let dlg: IFileOpenDialog = match CoCreateInstance(&FileOpenDialog, None, CLSCTX_ALL) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let _ = dlg.SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        if dlg.Show(hwnd).is_err() {
+            return; // キャンセル
+        }
+        let Ok(item) = dlg.GetResult() else { return };
+        let Ok(pwstr) = item.GetDisplayName(SIGDN_FILESYSPATH) else {
+            return;
+        };
+        let path = pwstr.to_string().unwrap_or_default();
+        CoTaskMemFree(Some(pwstr.as_ptr() as *const std::ffi::c_void));
+        if !path.is_empty() {
+            apply_bmz_dir(hwnd, st, &path);
+        }
+    }
+
+    /// 選ばれたフォルダを検証し、難易度表コンボ等を作り直す
+    unsafe fn apply_bmz_dir(hwnd: HWND, st: &mut State, path: &str) {
+        let dir = std::path::PathBuf::from(path);
+        let lib_db = dir.join("data").join("library.db");
+        if !dir.join("bmz-player.exe").exists() || !lib_db.exists() {
+            message_box(
+                hwnd,
+                "bmz-player.exe と data\\library.db が見つかりませんでした。\nbmz-player のインストールフォルダを選んでください。",
+                "フォルダの確認",
+            );
+            return;
+        }
+        let mut lib = match crate::db::Library::open(&lib_db) {
+            Ok(l) => l,
+            Err(_) => {
+                message_box(hwnd, "library.db を開けませんでした。", "フォルダの確認");
+                return;
+            }
+        };
+        let tables = lib.list_tables();
+        if tables.is_empty() {
+            message_box(
+                hwnd,
+                "そのフォルダの bmz-player には難易度表が登録されていません。",
+                "フォルダの確認",
+            );
+            return;
+        }
+        st.levels_map = tables
+            .iter()
+            .map(|(id, _)| (*id, lib.levels(*id)))
+            .collect();
+        st.tables = tables;
+        st.bmz_label = path.to_string();
+        cfg_set(&mut st.cfg, "bmz_dir", json!(path));
+        send(st.h_table, CB_RESETCONTENT, 0, 0);
+        for (_, name) in &st.tables {
+            combo_add(st.h_table, name);
+        }
+        let cur_table = cfg_i64(&st.cfg, "table_id");
+        let t_idx = cur_table
+            .and_then(|id| st.tables.iter().position(|(t, _)| *t == id))
+            .unwrap_or(0);
+        send(st.h_table, CB_SETCURSEL, t_idx, 0);
+        let tid = st.tables[t_idx].0;
+        let start_level = cfg_str(&st.cfg, "start_level");
+        refill_levels(st, tid, start_level.as_deref());
+        set_text(st.h_bmz_label, &format!("bmz-player: {}", path));
+    }
+
     /// GAS が有効 (OFF 以外) のときはゲージをグレーアウトする。
     /// 保存済みのゲージ値自体は保持する
     unsafe fn update_gauge_enabled(st: &State) {
@@ -586,6 +689,13 @@ mod win {
                         }
                     });
                     LRESULT(0)
+                } else if id == ID_BROWSE {
+                    STATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            unsafe { browse_bmz_dir(hwnd, st) };
+                        }
+                    });
+                    LRESULT(0)
                 } else if id == ID_START {
                     STATE.with(|s| {
                         if let Some(st) = s.borrow_mut().as_mut() {
@@ -655,6 +765,7 @@ mod win {
             return None;
         }
         unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             let _ = SetProcessDpiAwarenessContext(
                 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
             );
@@ -671,6 +782,7 @@ mod win {
                 h_result_sec: HWND::default(),
                 h_day_start: HWND::default(),
                 h_tab: HWND::default(),
+                h_bmz_label: HWND::default(),
                 page_main: Vec::new(),
                 page_report: Vec::new(),
                 h_mode: HWND::default(),
