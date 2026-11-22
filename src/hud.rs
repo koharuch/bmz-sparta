@@ -16,7 +16,7 @@ pub fn now_secs() -> f64 {
 #[cfg(windows)]
 pub fn read_status() -> Option<Value> {
     let text = std::fs::read_to_string(crate::config::status_path()).ok()?;
-    serde_json::from_str(&text).ok()
+    serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()
 }
 
 #[cfg(not(windows))]
@@ -492,7 +492,7 @@ mod win {
     pub fn run() -> i32 {
         let saved: Value = std::fs::read_to_string(crate::config::hud_pos_path())
             .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
+            .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
             .unwrap_or(Value::Null);
         let gi = |k: &str, d: i32| saved.get(k).and_then(|v| v.as_i64()).unwrap_or(d as i64) as i32;
         let (x, y, w, h) = (gi("x", 1180), gi("y", 310), gi("w", 460), gi("h", 400));

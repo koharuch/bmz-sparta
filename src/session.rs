@@ -290,14 +290,18 @@ pub fn run(dry: bool, setup: bool) -> i32 {
         );
         if let Some(first) = charts.first() {
             println!(
-                "先頭の譜面: chart_id={:?} title={} path={:?}",
-                first.chart_id, first.title, first.path
+                "先頭の譜面: chart_id={} title={} path={}",
+                first.chart_id.map(|v| v.to_string()).unwrap_or_default(),
+                first.title,
+                first.path.as_deref().unwrap_or("")
             );
         }
         match choose_chart(&lib, &scores, table_id, lv, &HashSet::new(), "priority") {
             Some(c) => println!(
-                "選曲: chart_id={:?} title={} path={:?}",
-                c.chart_id, c.title, c.path
+                "選曲: chart_id={} title={} path={}",
+                c.chart_id.map(|v| v.to_string()).unwrap_or_default(),
+                c.title,
+                c.path.as_deref().unwrap_or("")
             ),
             None => println!("選曲: なし"),
         }

@@ -28,7 +28,7 @@ pub fn load_config() -> Value {
     let p = config_path();
     if p.exists() {
         if let Ok(text) = std::fs::read_to_string(&p) {
-            if let Ok(v) = serde_json::from_str(&text) {
+            if let Ok(v) = serde_json::from_str(text.trim_start_matches('\u{feff}')) {
                 return v;
             }
         }
