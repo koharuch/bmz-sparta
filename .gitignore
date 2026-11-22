@@ -1,0 +1,5 @@
+/target
+# 利用者ローカルの設定・状態 (exe と同じフォルダに生成される)
+/sparta.json
+/sparta-status.json
+/hud-pos.json

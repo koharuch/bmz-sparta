@@ -1,0 +1,26 @@
+[package]
+name = "bmz-sparta"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "BMSスパルタ練習ツール for bmz-player (自動選曲・点数制レベル昇降) / Sparta-style training launcher for bmz-player"
+repository = "https://github.com/koharuch/bmz-sparta"
+keywords = ["bms", "bmz-player"]
+categories = ["games"]
+
+[dependencies]
+serde_json = "1"
+rand = "0.8"
+ctrlc = "3"
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = true
