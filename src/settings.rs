@@ -61,7 +61,9 @@ mod win {
 
     const WM_COMMAND: u32 = 0x0111;
     const WM_NOTIFY: u32 = 0x004E;
-    const TCM_INSERTITEMW: u32 = 0x1307;
+    const WM_CTLCOLORBTN: u32 = 0x0135;
+    const WM_CTLCOLORSTATIC: u32 = 0x0138;
+    const TCM_INSERTITEMW: u32 = 0x133E; // TCM_FIRST(0x1300) + 62 (A版は +7)
     const TCM_GETCURSEL: u32 = 0x130B;
     const TCN_SELCHANGE: u32 = 4294966745; // -551
     const TCIF_TEXT: u32 = 0x0001;
@@ -216,7 +218,7 @@ mod win {
 
     unsafe fn create_controls(hwnd: HWND) {
         let font = CreateFontW(
-            -14,
+            -15,
             0,
             0,
             0,
@@ -229,7 +231,7 @@ mod win {
             0,
             4, // ANTIALIASED_QUALITY
             0,
-            w!("MS Gothic"),
+            w!("Yu Gothic UI"),
         );
         STATE.with(|s| {
             let mut guard = s.borrow_mut();
@@ -605,6 +607,12 @@ mod win {
                     DefWindowProcW(hwnd, msg, wp, lp)
                 }
             }
+            WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
+                // 白背景に馴染ませる (モダンな見た目に寄せる)
+                let hdc = HDC(wp.0 as *mut std::ffi::c_void);
+                let _ = SetBkMode(hdc, TRANSPARENT);
+                LRESULT(GetStockObject(WHITE_BRUSH).0 as isize)
+            }
             WM_NOTIFY => {
                 let hdr = unsafe { &*(lp.0 as *const NMHDR) };
                 if hdr.code == TCN_SELCHANGE {
@@ -685,6 +693,7 @@ mod win {
                 lpfnWndProc: Some(wndproc),
                 hInstance: hinst,
                 lpszClassName: class_name,
+                hbrBackground: HBRUSH(GetStockObject(WHITE_BRUSH).0),
                 ..Default::default()
             };
             RegisterClassExW(&wc);
