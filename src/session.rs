@@ -194,7 +194,6 @@ fn open_env(
 
 pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
     let mut cfg = if setup { json!({}) } else { load_config() };
-    let rules = Rules::from_config(&cfg);
 
     let mut bmz_dir = match find_bmz_dir(&cfg) {
         Some(d) => d,
@@ -224,6 +223,7 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
     };
     // 設定GUI (Windows)。キャンセルされたら終了、使えなければ対話へ落とす
     let mut gui_done = false;
+    let mut gui_persist = true;
     if !dry && !console {
         let levels_map: std::collections::HashMap<i64, Vec<String>> = table_list
             .iter()
@@ -235,11 +235,11 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
             &table_list,
             &levels_map,
         ) {
-            Some(true) => {
+            Some((true, persist)) => {
                 gui_done = true;
-                save_config(&cfg);
+                gui_persist = persist;
             }
-            Some(false) => {
+            Some((false, _)) => {
                 println!("キャンセルしました。");
                 return 0;
             }
@@ -268,6 +268,8 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
             }
         }
     }
+    // ルールは GUI での変更後の cfg から作る (開始直後のセッションにも反映する)
+    let rules = Rules::from_config(&cfg);
     if !gui_done && (cfg.get("table_id").is_none() || setup) {
         println!("\n登録済みの難易度表:");
         for (i, (_, label)) in table_list.iter().enumerate() {
@@ -302,7 +304,9 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
             .unwrap_or(60);
         cfg_set(&mut cfg, "minutes", json!(v));
     }
-    save_config(&cfg);
+    if !gui_done || gui_persist {
+        save_config(&cfg);
+    }
 
     let level = cfg_str(&cfg, "start_level").unwrap_or_else(|| levels[0].clone());
     let mut level_idx = match levels.iter().position(|l| *l == level) {

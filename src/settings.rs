@@ -2,8 +2,8 @@
 //! Windows 専用。--console 指定時は従来のコンソール対話を使う。
 //!
 //! 戻り値: None = GUI が使えない (コンソール対話へフォールバック)
-//!         Some(true) = 「開始」が押された (cfg は更新済み)
-//!         Some(false) = キャンセルされた (終了する)
+//!         Some((true, persist)) = 「開始」。persist は設定を保存してよいか
+//!         Some((false, _)) = キャンセルされた (終了する)
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ pub fn show(
     _bmz_label: &str,
     _tables: &[(i64, String)],
     _levels_map: &HashMap<i64, Vec<String>>,
-) -> Option<bool> {
+) -> Option<(bool, bool)> {
     None
 }
 
@@ -24,7 +24,7 @@ pub fn show(
     bmz_label: &str,
     tables: &[(i64, String)],
     levels_map: &HashMap<i64, Vec<String>>,
-) -> Option<bool> {
+) -> Option<(bool, bool)> {
     win::show(cfg, bmz_label, tables, levels_map)
 }
 
@@ -75,6 +75,7 @@ mod win {
     const ID_PTS_HARD: i32 = 122;
     const ID_PTS_CLEAR: i32 = 123;
     const ID_FAIL_STREAK: i32 = 124;
+    const ID_SAVE: i32 = 125;
     const ID_START: i32 = 1;
     const ID_CANCEL: i32 = 2;
 
@@ -165,7 +166,8 @@ mod win {
         page_report: Vec<HWND>,
         page_hud: Vec<HWND>,
         page_adv: Vec<HWND>,
-        result: Option<bool>,
+        result: Option<(bool, bool)>,
+        saved_cfg: Value,
     }
 
     thread_local! {
@@ -614,6 +616,18 @@ mod win {
             make(
                 hwnd,
                 w!("BUTTON"),
+                "保存",
+                BS_PUSHBUTTON as u32,
+                58,
+                436,
+                110,
+                34,
+                ID_SAVE,
+                font,
+            );
+            make(
+                hwnd,
+                w!("BUTTON"),
                 "開始",
                 BS_PUSHBUTTON as u32,
                 196,
@@ -761,6 +775,10 @@ mod win {
                 st.h_fail_streak,
             ]);
             show_page(st, 0);
+            // 値を正規化 (クランプ等) してから、保存済みスナップショットを取る。
+            // 以後の変更は「未保存」として検出できる
+            collect(st);
+            st.saved_cfg = st.cfg.clone();
         });
     }
 
@@ -778,6 +796,26 @@ mod win {
         for h in &st.page_adv {
             let _ = ShowWindow(*h, if page == 3 { SW_SHOW } else { SW_HIDE });
         }
+    }
+
+    /// 未保存の変更があるときの警告。
+    /// 戻り値は MessageBox のボタン (6=はい / 7=いいえ / 2=キャンセル)
+    unsafe fn warn_unsaved(hwnd: HWND) -> i32 {
+        let t: Vec<u16> = "保存されていない変更があります。\n保存してから開始しますか？"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let c: Vec<u16> = "未保存の変更"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        MessageBoxW(
+            hwnd,
+            PCWSTR(t.as_ptr()),
+            PCWSTR(c.as_ptr()),
+            MB_YESNOCANCEL | MB_ICONWARNING,
+        )
+        .0
     }
 
     unsafe fn message_box(hwnd: HWND, text: &str, caption: &str) {
@@ -971,19 +1009,52 @@ mod win {
                         }
                     });
                     LRESULT(0)
+                } else if id == ID_SAVE {
+                    STATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            unsafe {
+                                collect(st);
+                                crate::config::save_config(&st.cfg);
+                                st.saved_cfg = st.cfg.clone();
+                            }
+                        }
+                    });
+                    LRESULT(0)
                 } else if id == ID_START {
+                    let mut proceed = false;
                     STATE.with(|s| {
                         if let Some(st) = s.borrow_mut().as_mut() {
                             unsafe { collect(st) };
-                            st.result = Some(true);
+                            if st.cfg == st.saved_cfg {
+                                st.result = Some((true, true));
+                                proceed = true;
+                            } else {
+                                match unsafe { warn_unsaved(hwnd) } {
+                                    6 => {
+                                        // はい: 保存して開始
+                                        crate::config::save_config(&st.cfg);
+                                        st.saved_cfg = st.cfg.clone();
+                                        st.result = Some((true, true));
+                                        proceed = true;
+                                    }
+                                    7 => {
+                                        // いいえ: 保存せず開始 (今回のセッション限り)
+                                        st.result = Some((true, false));
+                                        proceed = true;
+                                    }
+                                    _ => {} // キャンセル: 編集に戻る
+                                }
+                            }
                         }
                     });
-                    let _ = DestroyWindow(hwnd);
+                    if proceed {
+                        let _ = DestroyWindow(hwnd);
+                    }
                     LRESULT(0)
                 } else if id == ID_CANCEL {
                     STATE.with(|s| {
                         if let Some(st) = s.borrow_mut().as_mut() {
-                            st.result = Some(false);
+                            st.result = Some((false, false));
                         }
                     });
                     let _ = DestroyWindow(hwnd);
@@ -1015,7 +1086,7 @@ mod win {
                 STATE.with(|s| {
                     if let Some(st) = s.borrow_mut().as_mut() {
                         if st.result.is_none() {
-                            st.result = Some(false);
+                            st.result = Some((false, false));
                         }
                     }
                 });
@@ -1035,7 +1106,7 @@ mod win {
         bmz_label: &str,
         tables: &[(i64, String)],
         levels_map: &HashMap<i64, Vec<String>>,
-    ) -> Option<bool> {
+    ) -> Option<(bool, bool)> {
         if tables.is_empty() {
             return None;
         }
@@ -1080,6 +1151,7 @@ mod win {
                 h_hud: HWND::default(),
                 h_report: HWND::default(),
                 result: None,
+                saved_cfg: Value::Null,
             });
         });
         unsafe {
@@ -1130,11 +1202,11 @@ mod win {
         let st = STATE.with(|s| s.borrow_mut().take());
         match st {
             Some(st) => match st.result {
-                Some(true) => {
+                Some((true, persist)) => {
                     *cfg = st.cfg;
-                    Some(true)
+                    Some((true, persist))
                 }
-                Some(false) => Some(false),
+                Some((false, _)) => Some((false, false)),
                 None => None,
             },
             None => None,
