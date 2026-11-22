@@ -77,7 +77,6 @@ mod win {
     const ID_FAIL_STREAK: i32 = 124;
     const ID_SAVE: i32 = 125;
     const ID_START: i32 = 1;
-    const ID_CANCEL: i32 = 2;
 
     const WM_COMMAND: u32 = 0x0111;
     const WM_NOTIFY: u32 = 0x004E;
@@ -618,7 +617,7 @@ mod win {
                 w!("BUTTON"),
                 "保存",
                 BS_PUSHBUTTON as u32,
-                58,
+                118,
                 436,
                 110,
                 34,
@@ -630,23 +629,11 @@ mod win {
                 w!("BUTTON"),
                 "開始",
                 BS_PUSHBUTTON as u32,
-                196,
+                252,
                 436,
                 110,
                 34,
                 ID_START,
-                font,
-            );
-            make(
-                hwnd,
-                w!("BUTTON"),
-                "キャンセル",
-                BS_PUSHBUTTON as u32,
-                334,
-                436,
-                110,
-                34,
-                ID_CANCEL,
                 font,
             );
 
@@ -1050,14 +1037,6 @@ mod win {
                     if proceed {
                         let _ = DestroyWindow(hwnd);
                     }
-                    LRESULT(0)
-                } else if id == ID_CANCEL {
-                    STATE.with(|s| {
-                        if let Some(st) = s.borrow_mut().as_mut() {
-                            st.result = Some((false, false));
-                        }
-                    });
-                    let _ = DestroyWindow(hwnd);
                     LRESULT(0)
                 } else {
                     DefWindowProcW(hwnd, msg, wp, lp)
