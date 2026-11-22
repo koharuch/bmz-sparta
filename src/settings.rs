@@ -76,6 +76,9 @@ mod win {
     const ID_PTS_CLEAR: i32 = 123;
     const ID_FAIL_STREAK: i32 = 124;
     const ID_SAVE: i32 = 125;
+    const ID_PREVIEW: i32 = 126;
+    const WM_TIMER: u32 = 0x0113;
+    const PREVIEW_TIMER_ID: usize = 1;
     const ID_START: i32 = 1;
 
     const WM_COMMAND: u32 = 0x0111;
@@ -161,6 +164,9 @@ mod win {
         h_pts_hard: HWND,
         h_pts_clear: HWND,
         h_fail_streak: HWND,
+        h_preview: HWND,
+        preview: Option<std::process::Child>,
+        preview_written: String,
         page_main: Vec<HWND>,
         page_report: Vec<HWND>,
         page_hud: Vec<HWND>,
@@ -546,6 +552,18 @@ mod win {
                 ID_HUD_COUNTDOWN,
                 font,
             );
+            st.h_preview = make(
+                hwnd,
+                w!("BUTTON"),
+                "プレビュー表示",
+                BS_PUSHBUTTON as u32,
+                196,
+                364,
+                248,
+                30,
+                ID_PREVIEW,
+                font,
+            );
             // ---- 詳細タブ (レベル昇降ルール) ----
             label(&mut st.page_adv, 12, 84, 176, "レベルアップに必要な pt");
             st.h_up_points = make(
@@ -753,6 +771,7 @@ mod win {
                 st.h_legend,
                 st.h_remain,
                 st.h_countdown,
+                st.h_preview,
             ]);
             st.page_adv.extend([
                 st.h_up_points,
@@ -803,6 +822,75 @@ mod win {
             MB_YESNOCANCEL | MB_ICONWARNING,
         )
         .0
+    }
+
+    /// プレビューHUD用の一時設定 (hud-preview.json) を書く。
+    /// 内容が変わったときだけ書き直す
+    unsafe fn write_preview(st: &mut State, force: bool) {
+        collect(st);
+        let mut v = st.cfg.clone();
+        // 選択中の表・レベルの表示名をダミー状態用に渡す
+        let t_sel = combo_sel(st.h_table);
+        if t_sel >= 0 && (t_sel as usize) < st.tables.len() {
+            let (tid, label) = st.tables[t_sel as usize].clone();
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("_preview_table".into(), json!(label));
+                let l_sel = combo_sel(st.h_level);
+                if let Some(levels) = st.levels_map.get(&tid) {
+                    if l_sel >= 0 && (l_sel as usize) < levels.len() {
+                        obj.insert(
+                            "_preview_level".into(),
+                            json!(levels[l_sel as usize].clone()),
+                        );
+                    }
+                }
+            }
+        }
+        let text = serde_json::to_string(&v).unwrap_or_default();
+        if force || text != st.preview_written {
+            let _ = std::fs::write(crate::hud::preview_cfg_path(), &text);
+            st.preview_written = text;
+        }
+    }
+
+    /// プレビューの背景用に bmz-player 本体も起動する (配置の目安)
+    fn launch_bmz(st: &State) {
+        if let Some(dir) = crate::config::find_bmz_dir(&st.cfg) {
+            let exe = dir.join("bmz-player.exe");
+            if exe.exists() {
+                let _ = std::process::Command::new(exe).spawn();
+            }
+        }
+    }
+
+    unsafe fn stop_preview(hwnd: HWND, st: &mut State) {
+        let _ = KillTimer(hwnd, PREVIEW_TIMER_ID);
+        if let Some(mut child) = st.preview.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        st.preview_written.clear();
+        let _ = std::fs::remove_file(crate::hud::preview_cfg_path());
+        set_text(st.h_preview, "プレビュー表示");
+    }
+
+    unsafe fn toggle_preview(hwnd: HWND, st: &mut State) {
+        if st.preview.is_some() {
+            stop_preview(hwnd, st);
+            return;
+        }
+        write_preview(st, true);
+        if let Ok(exe) = std::env::current_exe() {
+            if let Ok(child) = std::process::Command::new(exe)
+                .args(["hud", "--preview"])
+                .spawn()
+            {
+                st.preview = Some(child);
+                set_text(st.h_preview, "プレビュー終了");
+                SetTimer(hwnd, PREVIEW_TIMER_ID, 400, None);
+                launch_bmz(st);
+            }
+        }
     }
 
     unsafe fn message_box(hwnd: HWND, text: &str, caption: &str) {
@@ -996,6 +1084,13 @@ mod win {
                         }
                     });
                     LRESULT(0)
+                } else if id == ID_PREVIEW {
+                    STATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            unsafe { toggle_preview(hwnd, st) };
+                        }
+                    });
+                    LRESULT(0)
                 } else if id == ID_SAVE {
                     STATE.with(|s| {
                         if let Some(st) = s.borrow_mut().as_mut() {
@@ -1047,6 +1142,16 @@ mod win {
                 let hdc = HDC(wp.0 as *mut std::ffi::c_void);
                 let _ = SetBkMode(hdc, TRANSPARENT);
                 LRESULT(GetStockObject(WHITE_BRUSH).0 as isize)
+            }
+            WM_TIMER => {
+                STATE.with(|s| {
+                    if let Some(st) = s.borrow_mut().as_mut() {
+                        if st.preview.is_some() {
+                            unsafe { write_preview(st, false) };
+                        }
+                    }
+                });
+                LRESULT(0)
             }
             WM_NOTIFY => {
                 let hdr = unsafe { &*(lp.0 as *const NMHDR) };
@@ -1120,6 +1225,9 @@ mod win {
                 h_pts_hard: HWND::default(),
                 h_pts_clear: HWND::default(),
                 h_fail_streak: HWND::default(),
+                h_preview: HWND::default(),
+                preview: None,
+                preview_written: String::new(),
                 page_main: Vec::new(),
                 page_report: Vec::new(),
                 page_hud: Vec::new(),
@@ -1180,14 +1288,22 @@ mod win {
         }
         let st = STATE.with(|s| s.borrow_mut().take());
         match st {
-            Some(st) => match st.result {
-                Some((true, persist)) => {
-                    *cfg = st.cfg;
-                    Some((true, persist))
+            Some(mut st) => {
+                // プレビューが残っていたら片付ける
+                if let Some(mut child) = st.preview.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = std::fs::remove_file(crate::hud::preview_cfg_path());
                 }
-                Some((false, _)) => Some((false, false)),
-                None => None,
-            },
+                match st.result {
+                    Some((true, persist)) => {
+                        *cfg = st.cfg;
+                        Some((true, persist))
+                    }
+                    Some((false, _)) => Some((false, false)),
+                    None => None,
+                }
+            }
             None => None,
         }
     }

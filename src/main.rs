@@ -30,8 +30,9 @@ mod status;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let preview = args.iter().any(|a| a == "--preview");
     let code = if args.iter().any(|a| a == "hud") {
-        hud::run_hud()
+        hud::run_hud(preview)
     } else {
         let dry = args.iter().any(|a| a == "--dry-run");
         let setup = args.iter().any(|a| a == "--setup");

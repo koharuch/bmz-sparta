@@ -5,3 +5,6 @@
 /hud-pos.json
 sparta-day.json
 result-*.html
+
+# HUDプレビューの一時設定 (設定GUIが生成)
+hud-preview.json

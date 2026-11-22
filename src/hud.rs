@@ -22,14 +22,20 @@ pub fn read_status() -> Option<Value> {
 }
 
 #[cfg(not(windows))]
-pub fn run_hud() -> i32 {
+pub fn run_hud(_preview: bool) -> i32 {
     eprintln!("HUD は Windows 専用です。");
     1
 }
 
 #[cfg(windows)]
-pub fn run_hud() -> i32 {
-    win::run()
+pub fn run_hud(preview: bool) -> i32 {
+    win::run(preview)
+}
+
+/// プレビュー用: 設定GUIが書く一時設定 (hud-preview.json) のパス
+#[cfg(windows)]
+pub fn preview_cfg_path() -> std::path::PathBuf {
+    crate::config::base_dir().join("hud-preview.json")
 }
 
 #[cfg(windows)]
@@ -390,6 +396,8 @@ mod win {
         bg_alpha: u8,
         renderer: Renderer,
         ended_at: Option<f64>,
+        preview: bool,
+        t0: f64,
     }
 
     thread_local! {
@@ -398,6 +406,44 @@ mod win {
 
     /// 描画して表示。終了すべきなら true
     fn update(hwnd: HWND) -> bool {
+        let preview = STATE.with(|s| {
+            s.borrow()
+                .as_ref()
+                .map(|h| h.preview)
+                .unwrap_or(false)
+        });
+        if preview {
+            // プレビュー: 設定ファイルの変更をその場で反映し、ダミー状態を描く
+            let cfg = load_preview_cfg();
+            STATE.with(|s| {
+                if let Some(h) = s.borrow_mut().as_mut() {
+                    let (nx, ny, nw, nh, na) = hud_geometry(&cfg, &load_saved_pos());
+                    if (nx, ny, nw, nh) != (h.x, h.y, h.w, h.h) {
+                        h.x = nx;
+                        h.y = ny;
+                        h.w = nw;
+                        h.h = nh;
+                        h.renderer = Renderer::new(nw, nh);
+                        unsafe {
+                            let _ = SetWindowPos(
+                                hwnd,
+                                None,
+                                nx,
+                                ny,
+                                nw,
+                                nh,
+                                SWP_NOZORDER | SWP_NOACTIVATE,
+                            );
+                        }
+                    }
+                    h.bg_alpha = na;
+                    apply_flags(&mut h.renderer, &cfg);
+                }
+            });
+            let t0 = STATE.with(|s| s.borrow().as_ref().map(|h| h.t0).unwrap_or(0.0));
+            blit(hwnd, &dummy_status(&cfg, t0));
+            return false;
+        }
         let st = read_status();
         if let Some(st) = &st {
             if st.get("state").and_then(|v| v.as_str()) == Some("ended") {
@@ -531,22 +577,36 @@ mod win {
         }
     }
 
-    pub fn run() -> i32 {
-        let saved: Value = std::fs::read_to_string(crate::config::hud_pos_path())
+    fn load_saved_pos() -> Value {
+        std::fs::read_to_string(crate::config::hud_pos_path())
             .ok()
             .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
-            .unwrap_or(Value::Null);
-        let gi = |k: &str, d: i32| saved.get(k).and_then(|v| v.as_i64()).unwrap_or(d as i64) as i32;
+            .unwrap_or(Value::Null)
+    }
+
+    fn load_preview_cfg() -> Value {
+        std::fs::read_to_string(super::preview_cfg_path())
+            .ok()
+            .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
+            .unwrap_or_else(crate::config::load_config)
+    }
+
+    /// cfg と保存済み矩形から HUD の配置 (x, y, w, h) と背景アルファを決める
+    fn hud_geometry(cfg: &Value, saved: &Value) -> (i32, i32, i32, i32, u8) {
+        let gi = |k: &str, d: i32| {
+            saved
+                .get(k)
+                .and_then(|v| v.as_i64())
+                .unwrap_or(d as i64) as i32
+        };
         let (mut x, mut y, mut w, h) = (gi("x", 1180), gi("y", 310), gi("w", 460), gi("h", 400));
-        // sparta.json の hud_* 設定を反映する
-        let cfg = crate::config::load_config();
-        if let Some(cw) = crate::config::cfg_i64(&cfg, "hud_width") {
+        if let Some(cw) = crate::config::cfg_i64(cfg, "hud_width") {
             w = (cw as i32).clamp(240, 1200);
         }
-        let bg_alpha = crate::config::cfg_i64(&cfg, "hud_bg_alpha")
+        let bg_alpha = crate::config::cfg_i64(cfg, "hud_bg_alpha")
             .unwrap_or(BG_ALPHA as i64)
             .clamp(0, 255) as u8;
-        let anchor = crate::config::cfg_str(&cfg, "hud_anchor")
+        let anchor = crate::config::cfg_str(cfg, "hud_anchor")
             .unwrap_or_else(|| "custom".to_string());
         if anchor != "custom" {
             unsafe {
@@ -573,11 +633,56 @@ mod win {
                 }
             }
         }
+        (x, y, w, h, bg_alpha)
+    }
+
+    fn apply_flags(renderer: &mut Renderer, cfg: &Value) {
+        renderer.show_best = crate::config::cfg_bool(cfg, "hud_show_best", true);
+        renderer.show_legend = crate::config::cfg_bool(cfg, "hud_show_legend", true);
+        renderer.show_remain = crate::config::cfg_bool(cfg, "hud_show_remain", true);
+        renderer.show_countdown = crate::config::cfg_bool(cfg, "hud_show_countdown", true);
+    }
+
+    /// プレビュー用のダミー状態 (全要素が見える result 状態)
+    fn dummy_status(cfg: &Value, t0: f64) -> Value {
+        let rules = crate::rules::Rules::from_config(cfg);
+        let total = crate::config::cfg_i64(cfg, "result_seconds")
+            .unwrap_or(20)
+            .max(1) as f64;
+        let remain = total - ((now_secs() - t0) % total);
+        serde_json::json!({
+            "state": "result",
+            "table": cfg.get("_preview_table").and_then(|v| v.as_str()).unwrap_or(""),
+            "level": cfg.get("_preview_level").and_then(|v| v.as_str()).unwrap_or(""),
+            "song": 3,
+            "cleared": 2,
+            "points": (rules.up_points - 1).max(0),
+            "up_points": rules.up_points,
+            "pts_exhard": rules.pts_exhard,
+            "pts_hard": rules.pts_hard,
+            "pts_clear": rules.pts_clear,
+            "lose": (rules.fail_streak - 1).max(0),
+            "lose_max": rules.fail_streak,
+            "deadline": now_secs() as i64 + 25 * 60,
+            "last_lamp": "EX HARD CLEAR",
+            "last_score_fmt": "AAA +123 [ 2456 ]",
+            "last_bp": 12,
+            "last_gain": rules.pts_exhard,
+            "skip_total": total,
+            "skip_deadline": now_secs() + remain,
+        })
+    }
+
+    pub fn run(preview: bool) -> i32 {
+        let saved = load_saved_pos();
+        let cfg = if preview {
+            load_preview_cfg()
+        } else {
+            crate::config::load_config()
+        };
+        let (x, y, w, h, bg_alpha) = hud_geometry(&cfg, &saved);
         let mut renderer = Renderer::new(w, h);
-        renderer.show_best = crate::config::cfg_bool(&cfg, "hud_show_best", true);
-        renderer.show_legend = crate::config::cfg_bool(&cfg, "hud_show_legend", true);
-        renderer.show_remain = crate::config::cfg_bool(&cfg, "hud_show_remain", true);
-        renderer.show_countdown = crate::config::cfg_bool(&cfg, "hud_show_countdown", true);
+        apply_flags(&mut renderer, &cfg);
         STATE.with(|s| {
             *s.borrow_mut() = Some(HudState {
                 x,
@@ -587,6 +692,8 @@ mod win {
                 bg_alpha,
                 renderer,
                 ended_at: None,
+                preview,
+                t0: now_secs(),
             });
         });
         unsafe {
