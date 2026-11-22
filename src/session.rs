@@ -163,7 +163,7 @@ fn wait_with_result_timeout(
     let _ = child.wait();
 }
 
-pub fn run(dry: bool, setup: bool) -> i32 {
+pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
     let mut cfg = if setup { json!({}) } else { load_config() };
     let rules = Rules::from_config(&cfg);
 
@@ -220,7 +220,31 @@ pub fn run(dry: bool, setup: bool) -> i32 {
         println!("難易度表が登録されていません。bmz-player で表を追加してください。");
         return 1;
     }
-    if cfg.get("table_id").is_none() || setup {
+    // 設定GUI (Windows)。キャンセルされたら終了、使えなければ対話へ落とす
+    let mut gui_done = false;
+    if !dry && !console {
+        let levels_map: std::collections::HashMap<i64, Vec<String>> = table_list
+            .iter()
+            .map(|(id, _)| (*id, lib.levels(*id)))
+            .collect();
+        match crate::settings::show(
+            &mut cfg,
+            &bmz_dir.to_string_lossy(),
+            &table_list,
+            &levels_map,
+        ) {
+            Some(true) => {
+                gui_done = true;
+                save_config(&cfg);
+            }
+            Some(false) => {
+                println!("キャンセルしました。");
+                return 0;
+            }
+            None => {}
+        }
+    }
+    if !gui_done && (cfg.get("table_id").is_none() || setup) {
         println!("\n登録済みの難易度表:");
         for (i, (_, label)) in table_list.iter().enumerate() {
             println!("  {i}: {label}");
@@ -244,11 +268,11 @@ pub fn run(dry: bool, setup: bool) -> i32 {
         return 1;
     }
     println!("レベル一覧: {}", levels.join(", "));
-    if cfg.get("start_level").is_none() || setup {
+    if !gui_done && (cfg.get("start_level").is_none() || setup) {
         let v = ask("開始レベル: ", Some(&levels[0])).unwrap_or_else(|| levels[0].clone());
         cfg_set(&mut cfg, "start_level", json!(v));
     }
-    if cfg.get("minutes").is_none() || setup {
+    if !gui_done && (cfg.get("minutes").is_none() || setup) {
         let v: i64 = ask("セッション上限 (分): ", Some("60"))
             .and_then(|s| s.parse().ok())
             .unwrap_or(60);
@@ -273,6 +297,7 @@ pub fn run(dry: bool, setup: bool) -> i32 {
         }
     };
 
+    let start_level_idx = level_idx;
     let minutes = cfg_i64(&cfg, "minutes").unwrap_or(60);
     let result_seconds = cfg_i64(&cfg, "result_seconds").unwrap_or(20);
     let deadline = now_secs() + (minutes * 60) as f64;
@@ -322,6 +347,10 @@ pub fn run(dry: bool, setup: bool) -> i32 {
     let mut used: HashSet<Option<i64>> = HashSet::new();
     let mut played: i64 = 0;
     let mut cleared: i64 = 0;
+    let mut max_idx = level_idx;
+    let mut history: Vec<crate::report::SongRow> = Vec::new();
+    let mut bucket_counts: std::collections::HashMap<&'static str, i64> =
+        std::collections::HashMap::new();
 
     // HUD は同じ exe を子プロセスとして起動する (状態ファイル経由で分離)
     let mut hud_proc: Option<Child> = None;
@@ -432,17 +461,34 @@ pub fn run(dry: bool, setup: bool) -> i32 {
             lose += 1;
             println!("  FAIL (lamp={result}) 連敗 {lose}");
         }
+        let mut event: Option<String> = None;
         if points >= rules.up_points && level_idx < levels.len() - 1 {
             level_idx += 1;
             points = 0;
             lose = 0;
+            max_idx = max_idx.max(level_idx);
             println!("  *** レベルUP -> {} ***", levels[level_idx]);
+            event = Some(format!("LEVEL UP → {}", level_label(&levels[level_idx])));
         } else if lose >= rules.fail_streak && level_idx > 0 {
             level_idx -= 1;
             points = 0;
             lose = 0;
             println!("  *** レベルDOWN -> {} ***", levels[level_idx]);
+            event = Some(format!("LEVEL DOWN → {}", level_label(&levels[level_idx])));
         }
+        *bucket_counts.entry(crate::report::lamp_bucket(result)).or_insert(0) += 1;
+        let det = scores.latest_detail(&chart, mark);
+        history.push(crate::report::SongRow {
+            level: level_label(&lv),
+            title: chart.title.clone(),
+            lamp: lamp_name(result).unwrap_or("?").to_string(),
+            score_fmt: det
+                .as_ref()
+                .and_then(|d| grade_fmt(d.ex_score, total_notes)),
+            bp: det.as_ref().and_then(|d| d.bp),
+            gained,
+            event,
+        });
     }
     if stop.load(Ordering::SeqCst) {
         println!("\n中断しました。");
@@ -467,6 +513,27 @@ pub fn run(dry: bool, setup: bool) -> i32 {
         }
         let _ = hud.kill();
         let _ = hud.wait();
+    }
+    if played > 0 && cfg_bool(&cfg, "report", true) {
+        let lamp_counts: Vec<(String, i64)> = crate::report::LAMP_ORDER
+            .iter()
+            .filter_map(|l| bucket_counts.get(l).map(|n| (l.to_string(), *n)))
+            .collect();
+        let rep = crate::report::SessionReport {
+            ended_unix: now_secs(),
+            table: table_label.clone(),
+            start_level: level_label(&levels[start_level_idx]),
+            final_level: level_label(&levels[level_idx]),
+            max_level: level_label(&levels[max_idx]),
+            played,
+            cleared,
+            lamp_counts,
+            songs: history,
+        };
+        if let Some(p) = crate::report::generate(&rep) {
+            println!("結果レポート: {}", p.display());
+            crate::report::open_in_browser(&p);
+        }
     }
     println!(
         "\n=== 終了: {played}曲プレイ / {cleared}クリア / 最終レベル {} ===",

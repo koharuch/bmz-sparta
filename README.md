@@ -27,10 +27,13 @@ and it launches charts one by one, moving you up or down levels by your results.
 1. [Releases](https://github.com/koharuch/bmz-sparta/releases) から
    `bmz-sparta.exe` をダウンロードして、好きなフォルダに置く
 2. `bmz-sparta.exe` を実行する
-   - 初回は bmz-player の場所・難易度表・開始レベル・セッション上限を対話で聞きます
+   - 設定ウィンドウが開きます。難易度表・開始レベル・セッション上限などを
+     選んで「開始」を押してください
      (設定は exe と同じフォルダの `sparta.json` に保存されます)
    - bmz-player は一般的なインストール場所から自動検出します
 3. あとは自動で選曲・起動が続きます
+4. セッションが終わると、結果レポート (HTML) が自動で開きます。
+   曲ごとの結果一覧と、X へポストするためのリンクが付いています
 
 初回の動作確認には `--dry-run` が使えます (DB の検出と選曲だけ表示して起動しません)。
 
@@ -38,6 +41,7 @@ and it launches charts one by one, moving you up or down levels by your results.
 bmz-sparta.exe --dry-run
 ```
 
+設定ウィンドウではなくコンソール対話で設定する場合は `--console`、
 設定をやり直すときは `--setup` です。
 
 ## 設定 (sparta.json)
@@ -56,6 +60,7 @@ exe と同じフォルダに生成されます。手で編集することもで�
 | `gauge` | 起動時のゲージ上書き (例: `ex-hard`)。プロファイルは変更しない | なし |
 | `gas` | 起動時の GAS 上書き | なし |
 | `hud` | HUD を表示するか | `true` |
+| `report` | 終了時に結果レポート (HTML) を生成して開くか | `true` |
 | `up_points` / `pts_exhard` / `pts_hard` / `pts_clear` / `fail_streak` | レベル昇降ルールの上書き | 3 / 3 / 2 / 1 / 3 |
 
 HUD の表示位置は `hud-pos.json` (`{"x":…, "y":…, "w":…, "h":…}`) で変更できます。
