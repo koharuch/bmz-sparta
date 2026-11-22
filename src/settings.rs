@@ -106,8 +106,8 @@ mod win {
     ];
 
     const MODES: [(&str, &str); 3] = [
-        ("priority", "未プレイ → 未クリア"),
-        ("noplay_failed", "未プレイ・FAILED → 未クリア"),
+        ("priority", "NO PLAY 優先"),
+        ("noplay_failed", "NO PLAY + FAILED 優先"),
         ("random", "ランダム"),
     ];
 
