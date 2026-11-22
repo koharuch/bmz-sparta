@@ -276,7 +276,7 @@ mod win {
                 ID_MINUTES,
                 font,
             );
-            label(12, 156, 176, "次の曲までの待機 (秒)");
+            label(12, 156, 176, "インターバル (秒)");
             st.h_result_sec = make(
                 hwnd,
                 w!("EDIT"),
@@ -289,52 +289,40 @@ mod win {
                 ID_RESULT_SEC,
                 font,
             );
-            make(
-                hwnd,
-                w!("STATIC"),
-                "(曲が終わった時点から数えます)",
-                0,
-                196,
-                182,
-                248,
-                18,
-                0,
-                font,
-            );
-            label(12, 204, 176, "選曲方式");
+            label(12, 192, 176, "選曲方式");
             st.h_mode = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
                 196,
-                204,
+                192,
                 248,
                 200,
                 ID_MODE,
                 font,
             );
-            label(12, 280, 176, "ゲージ");
+            label(12, 268, 176, "ゲージ");
             st.h_gauge = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
                 196,
-                280,
+                268,
                 248,
                 200,
                 ID_GAUGE,
                 font,
             );
-            label(12, 242, 176, "GAS");
+            label(12, 230, 176, "GAS");
             st.h_gas = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
                 196,
-                242,
+                230,
                 248,
                 200,
                 ID_GAS,
@@ -346,7 +334,7 @@ mod win {
                 "HUDを表示する",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                318,
+                306,
                 248,
                 22,
                 ID_HUD,
@@ -358,7 +346,7 @@ mod win {
                 "終了時に結果HTMLを開く",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                344,
+                332,
                 248,
                 22,
                 ID_REPORT,
@@ -370,7 +358,7 @@ mod win {
                 "開始",
                 BS_PUSHBUTTON as u32,
                 196,
-                384,
+                372,
                 110,
                 34,
                 ID_START,
@@ -382,7 +370,7 @@ mod win {
                 "キャンセル",
                 BS_PUSHBUTTON as u32,
                 334,
-                384,
+                372,
                 110,
                 34,
                 ID_CANCEL,
