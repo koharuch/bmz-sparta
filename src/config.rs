@@ -71,7 +71,8 @@ pub fn cfg_set(cfg: &mut Value, key: &str, val: Value) {
 }
 
 /// bmz-player.exe のあるフォルダを探す
-pub fn find_bmz_dir(cfg: &Value) -> Option<PathBuf> {
+/// 自動検出の候補フォルダ (優先順)。手動指定 (cfg の bmz_dir) が先頭
+pub fn bmz_candidates(cfg: &Value) -> Vec<PathBuf> {
     let mut cands: Vec<PathBuf> = Vec::new();
     if let Some(d) = cfg_str(cfg, "bmz_dir") {
         cands.push(PathBuf::from(d));
@@ -94,6 +95,10 @@ pub fn find_bmz_dir(cfg: &Value) -> Option<PathBuf> {
         cands.push(h.join("AppData/Local/Programs/bmz-player"));
     }
     cands
+}
+
+pub fn find_bmz_dir(cfg: &Value) -> Option<PathBuf> {
+    bmz_candidates(cfg)
         .into_iter()
         .find(|d| d.join("bmz-player.exe").exists())
 }

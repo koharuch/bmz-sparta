@@ -8,6 +8,18 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// bmz-player が見つからないときの場所指定ダイアログ (GUI起動時用)。
+/// None = キャンセルされた
+#[cfg(not(windows))]
+pub fn locate_bmz(cfg: &Value) -> Option<std::path::PathBuf> {
+    crate::config::find_bmz_dir(cfg)
+}
+
+#[cfg(windows)]
+pub fn locate_bmz(cfg: &Value) -> Option<std::path::PathBuf> {
+    win::locate(cfg)
+}
+
 #[cfg(not(windows))]
 pub fn show(
     _cfg: &mut Value,
@@ -1088,25 +1100,29 @@ mod win {
         );
     }
 
+    /// フォルダピッカーを開き、選ばれたフォルダを返す
+    unsafe fn pick_folder(hwnd: HWND) -> Option<std::path::PathBuf> {
+        let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_ALL).ok()?;
+        let _ = dlg.SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        if dlg.Show(hwnd).is_err() {
+            return None; // キャンセル
+        }
+        let item = dlg.GetResult().ok()?;
+        let pwstr = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = pwstr.to_string().unwrap_or_default();
+        CoTaskMemFree(Some(pwstr.as_ptr() as *const std::ffi::c_void));
+        if path.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(path))
+        }
+    }
+
     /// 「参照...」: bmz-player のインストールフォルダを選び直す。
     /// 複数インストール (バージョン違い等) がある人向けの手動指定
     unsafe fn browse_bmz_dir(hwnd: HWND, st: &mut State) {
-        let dlg: IFileOpenDialog = match CoCreateInstance(&FileOpenDialog, None, CLSCTX_ALL) {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-        let _ = dlg.SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        if dlg.Show(hwnd).is_err() {
-            return; // キャンセル
-        }
-        let Ok(item) = dlg.GetResult() else { return };
-        let Ok(pwstr) = item.GetDisplayName(SIGDN_FILESYSPATH) else {
-            return;
-        };
-        let path = pwstr.to_string().unwrap_or_default();
-        CoTaskMemFree(Some(pwstr.as_ptr() as *const std::ffi::c_void));
-        if !path.is_empty() {
-            apply_bmz_dir(hwnd, st, &path);
+        if let Some(dir) = pick_folder(hwnd) {
+            apply_bmz_dir(hwnd, st, &dir.to_string_lossy());
         }
     }
 
@@ -1459,6 +1475,223 @@ mod win {
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
+    }
+
+    // ---- bmz-player の場所指定ダイアログ (自動検出に失敗したとき用) ----
+
+    struct LocateState {
+        cfg: Value,
+        result: Option<std::path::PathBuf>,
+        h_status: HWND,
+    }
+
+    thread_local! {
+        static LOCATE: std::cell::RefCell<Option<LocateState>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    const ID_LOC_AUTO: i32 = 201;
+    const ID_LOC_BROWSE: i32 = 202;
+
+    unsafe extern "system" fn locate_wndproc(
+        hwnd: HWND,
+        msg: u32,
+        wp: WPARAM,
+        lp: LPARAM,
+    ) -> LRESULT {
+        const WM_COMMAND_MSG: u32 = 0x0111;
+        const WM_CLOSE: u32 = 0x0010;
+        const WM_DESTROY: u32 = 0x0002;
+        match msg {
+            WM_COMMAND_MSG => {
+                let id = (wp.0 & 0xffff) as i32;
+                if id == ID_LOC_AUTO {
+                    LOCATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            let cands = crate::config::bmz_candidates(&st.cfg);
+                            match cands.iter().find(|d| d.join("bmz-player.exe").exists()) {
+                                Some(d) => {
+                                    st.result = Some(d.clone());
+                                    let _ = DestroyWindow(hwnd);
+                                }
+                                None => {
+                                    let mut log = String::from(
+                                        "自動検出では見つかりませんでした。\r\n確認した場所:\r\n",
+                                    );
+                                    for d in &cands {
+                                        log.push_str(&format!("- {}\r\n", d.display()));
+                                    }
+                                    log.push_str(
+                                        "\r\n「参照...」から bmz-player.exe のあるフォルダを選んでください。",
+                                    );
+                                    set_text(st.h_status, &log);
+                                }
+                            }
+                        }
+                    });
+                    LRESULT(0)
+                } else if id == ID_LOC_BROWSE {
+                    if let Some(dir) = pick_folder(hwnd) {
+                        let mut proceed = false;
+                        LOCATE.with(|s| {
+                            if let Some(st) = s.borrow_mut().as_mut() {
+                                let lib_db = dir.join("data").join("library.db");
+                                if dir.join("bmz-player.exe").exists() && lib_db.exists() {
+                                    st.result = Some(dir.clone());
+                                    proceed = true;
+                                } else {
+                                    set_text(
+                                        st.h_status,
+                                        &format!(
+                                            "選択したフォルダでは見つかりませんでした:\r\n{}\r\n\r\nbmz-player.exe と data\\library.db があるフォルダを選んでください。",
+                                            dir.display()
+                                        ),
+                                    );
+                                }
+                            }
+                        });
+                        if proceed {
+                            let _ = DestroyWindow(hwnd);
+                        }
+                    }
+                    LRESULT(0)
+                } else {
+                    DefWindowProcW(hwnd, msg, wp, lp)
+                }
+            }
+            WM_CLOSE => {
+                let _ = DestroyWindow(hwnd);
+                LRESULT(0)
+            }
+            WM_DESTROY => {
+                PostQuitMessage(0);
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+
+    pub fn locate(cfg: &Value) -> Option<std::path::PathBuf> {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let _ = SetProcessDpiAwarenessContext(
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            );
+            let hinst = HINSTANCE(GetModuleHandleW(None).map(|m| m.0).unwrap_or_default());
+            let class_name = w!("BmzSpartaLocate");
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(locate_wndproc),
+                hInstance: hinst,
+                lpszClassName: class_name,
+                ..Default::default()
+            };
+            RegisterClassW(&wc);
+            LOCATE.with(|s| {
+                *s.borrow_mut() = Some(LocateState {
+                    cfg: cfg.clone(),
+                    result: None,
+                    h_status: HWND::default(),
+                });
+            });
+            let title: Vec<u16> = "bmz-player の場所"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let Ok(hwnd) = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                class_name,
+                PCWSTR(title.as_ptr()),
+                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                480,
+                300,
+                None,
+                None,
+                hinst,
+                None,
+            ) else {
+                return None;
+            };
+            let font = CreateFontW(
+                -15,
+                0,
+                0,
+                0,
+                400,
+                0,
+                0,
+                0,
+                1, // DEFAULT_CHARSET
+                0,
+                0,
+                4, // ANTIALIASED_QUALITY
+                0,
+                w!("Yu Gothic UI"),
+            );
+            make(
+                hwnd,
+                w!("STATIC"),
+                "bmz-player のインストールフォルダを指定してください。",
+                0,
+                16,
+                14,
+                432,
+                20,
+                0,
+                font,
+            );
+            // 状態/エラーログ (読み取り専用EDIT)
+            let h_status = make(
+                hwnd,
+                w!("EDIT"),
+                "まだ指定されていません。「自動検出」か「参照...」を押してください。",
+                WS_BORDER.0 | 0x0004 | 0x0800 | 0x0040, // MULTILINE | READONLY | AUTOVSCROLL
+                16,
+                44,
+                432,
+                118,
+                0,
+                font,
+            );
+            LOCATE.with(|s| {
+                if let Some(st) = s.borrow_mut().as_mut() {
+                    st.h_status = h_status;
+                }
+            });
+            make(
+                hwnd,
+                w!("BUTTON"),
+                "自動検出",
+                BS_PUSHBUTTON as u32,
+                76,
+                186,
+                150,
+                34,
+                ID_LOC_AUTO,
+                font,
+            );
+            make(
+                hwnd,
+                w!("BUTTON"),
+                "参照...",
+                BS_PUSHBUTTON as u32,
+                254,
+                186,
+                150,
+                34,
+                ID_LOC_BROWSE,
+                font,
+            );
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        LOCATE.with(|s| s.borrow_mut().take().and_then(|st| st.result))
     }
 
     pub fn show(

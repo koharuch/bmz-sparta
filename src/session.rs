@@ -198,14 +198,25 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
     let mut bmz_dir = match find_bmz_dir(&cfg) {
         Some(d) => d,
         None => {
-            let p = ask("bmz-player.exe のあるフォルダをフルパスで入力: ", None);
-            match p {
-                Some(p) if std::path::Path::new(&p).join("bmz-player.exe").exists() => {
-                    std::path::PathBuf::from(p)
+            if !dry && !console {
+                // GUI起動時: コンソールで聞かず、場所指定ダイアログで選んでもらう
+                match crate::settings::locate_bmz(&cfg) {
+                    Some(d) => d,
+                    None => {
+                        println!("キャンセルしました。");
+                        return 0;
+                    }
                 }
-                _ => {
-                    println!("bmz-player.exe が見つかりませんでした。終了します。");
-                    return 1;
+            } else {
+                let p = ask("bmz-player.exe のあるフォルダをフルパスで入力: ", None);
+                match p {
+                    Some(p) if std::path::Path::new(&p).join("bmz-player.exe").exists() => {
+                        std::path::PathBuf::from(p)
+                    }
+                    _ => {
+                        println!("bmz-player.exe が見つかりませんでした。終了します。");
+                        return 1;
+                    }
                 }
             }
         }
