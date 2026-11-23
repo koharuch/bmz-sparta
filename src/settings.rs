@@ -951,7 +951,7 @@ mod win {
             hwnd,
             PCWSTR(t.as_ptr()),
             PCWSTR(c.as_ptr()),
-            MB_YESNOCANCEL | MB_ICONWARNING,
+            MB_YESNOCANCEL | MB_ICONWARNING | MB_TOPMOST,
         )
         .0
     }
@@ -1096,7 +1096,7 @@ mod win {
             hwnd,
             PCWSTR(t.as_ptr()),
             PCWSTR(c.as_ptr()),
-            MB_OK | MB_ICONINFORMATION,
+            MB_OK | MB_ICONINFORMATION | MB_TOPMOST,
         );
     }
 
@@ -1304,26 +1304,32 @@ mod win {
                 } else if id == ID_PRESET_ADD {
                     STATE.with(|s| {
                         if let Some(st) = s.borrow_mut().as_mut() {
-                            let name = get_text(st.h_preset_name).trim().to_string();
+                            let mut name = get_text(st.h_preset_name).trim().to_string();
                             if name.is_empty() {
-                                unsafe {
-                                    message_box(hwnd, "プリセット名を入力してください。", "位置プリセット")
-                                };
-                            } else {
-                                let (x, y) = current_pos();
-                                let idx = match st.presets.iter().position(|(n, _, _)| *n == name) {
-                                    Some(i) => {
-                                        st.presets[i] = (name, x, y);
-                                        i
-                                    }
-                                    None => {
-                                        st.presets.push((name, x, y));
-                                        st.presets.len() - 1
-                                    }
-                                };
-                                unsafe { refresh_presets(st, Some(idx)) };
-                                set_text(st.h_preset_name, "");
+                                // 名前なしは「プリセットN」(空いている最小の番号) で登録する
+                                let mut n = 1;
+                                while st
+                                    .presets
+                                    .iter()
+                                    .any(|(p, _, _)| *p == format!("プリセット{n}"))
+                                {
+                                    n += 1;
+                                }
+                                name = format!("プリセット{n}");
                             }
+                            let (x, y) = current_pos();
+                            let idx = match st.presets.iter().position(|(nm, _, _)| *nm == name) {
+                                Some(i) => {
+                                    st.presets[i] = (name, x, y);
+                                    i
+                                }
+                                None => {
+                                    st.presets.push((name, x, y));
+                                    st.presets.len() - 1
+                                }
+                            };
+                            unsafe { refresh_presets(st, Some(idx)) };
+                            set_text(st.h_preset_name, "");
                         }
                     });
                     LRESULT(0)
