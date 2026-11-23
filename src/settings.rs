@@ -26,6 +26,7 @@ pub fn show(
     _bmz_label: &str,
     _tables: &[(i64, String)],
     _levels_map: &HashMap<i64, Vec<String>>,
+    _symbols_map: &HashMap<i64, String>,
 ) -> Option<(bool, bool)> {
     None
 }
@@ -36,8 +37,9 @@ pub fn show(
     bmz_label: &str,
     tables: &[(i64, String)],
     levels_map: &HashMap<i64, Vec<String>>,
+    symbols_map: &HashMap<i64, String>,
 ) -> Option<(bool, bool)> {
-    win::show(cfg, bmz_label, tables, levels_map)
+    win::show(cfg, bmz_label, tables, levels_map, symbols_map)
 }
 
 #[cfg(windows)]
@@ -202,6 +204,7 @@ mod win {
         bmz_label: String,
         tables: Vec<(i64, String)>,
         levels_map: HashMap<i64, Vec<String>>,
+        symbols_map: HashMap<i64, String>,
         h_table: HWND,
         h_level: HWND,
         h_minutes: HWND,
@@ -970,9 +973,11 @@ mod win {
                 let l_sel = combo_sel(st.h_level);
                 if let Some(levels) = st.levels_map.get(&tid) {
                     if l_sel >= 0 && (l_sel as usize) < levels.len() {
+                        // 実セッションの表記に合わせ、表のシンボル (★等) を付ける
+                        let symbol = st.symbols_map.get(&tid).cloned().unwrap_or_default();
                         obj.insert(
                             "_preview_level".into(),
-                            json!(levels[l_sel as usize].clone()),
+                            json!(format!("{}{}", symbol, levels[l_sel as usize])),
                         );
                     }
                 }
@@ -1157,6 +1162,10 @@ mod win {
         st.levels_map = tables
             .iter()
             .map(|(id, _)| (*id, lib.levels(*id)))
+            .collect();
+        st.symbols_map = tables
+            .iter()
+            .map(|(id, _)| (*id, lib.symbol(*id)))
             .collect();
         st.tables = tables;
         st.bmz_label = path.to_string();
@@ -1714,6 +1723,7 @@ mod win {
         bmz_label: &str,
         tables: &[(i64, String)],
         levels_map: &HashMap<i64, Vec<String>>,
+        symbols_map: &HashMap<i64, String>,
     ) -> Option<(bool, bool)> {
         if tables.is_empty() {
             return None;
@@ -1730,6 +1740,7 @@ mod win {
                 bmz_label: bmz_label.to_string(),
                 tables: tables.to_vec(),
                 levels_map: levels_map.clone(),
+                symbols_map: symbols_map.clone(),
                 h_table: HWND::default(),
                 h_level: HWND::default(),
                 h_minutes: HWND::default(),

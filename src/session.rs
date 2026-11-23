@@ -240,11 +240,16 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
             .iter()
             .map(|(id, _)| (*id, lib.levels(*id)))
             .collect();
+        let symbols_map: std::collections::HashMap<i64, String> = table_list
+            .iter()
+            .map(|(id, _)| (*id, lib.symbol(*id)))
+            .collect();
         match crate::settings::show(
             &mut cfg,
             &bmz_dir.to_string_lossy(),
             &table_list,
             &levels_map,
+            &symbols_map,
         ) {
             Some((true, persist)) => {
                 gui_done = true;
