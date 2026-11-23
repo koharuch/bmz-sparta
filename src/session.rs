@@ -168,7 +168,8 @@ fn wait_with_result_timeout(
                 } else {
                     result_seconds as f64
                 };
-                if now_secs() - t0 >= grace {
+                if now_secs() - t0 >= grace || now_secs() >= deadline {
+                    // 猶予かセッション期限の早い方で打ち切る
                     let _ = child.kill();
                     killed = true;
                     break;
@@ -235,7 +236,17 @@ fn open_env(
 }
 
 pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>) -> i32 {
-    let mut cfg = if setup { json!({}) } else { load_config() };
+    let (loaded_cfg, load_err) = if setup {
+        (json!({}), None)
+    } else {
+        crate::config::load_config_checked()
+    };
+    if let Some(e) = load_err {
+        // 壊れた設定を空設定として扱い、上書きで元を失わないよう止める
+        eprintln!("エラー: {e} ファイルを修正するか削除してから再実行してください。");
+        return if cli.is_some() { 2 } else { 1 };
+    }
+    let mut cfg = loaded_cfg;
     // CLI (run サブコマンド) の上書きはメモリ上だけ。sparta.json へは書き戻さない
     let cli_mode = cli.is_some();
     if let Some(ov) = &cli {
@@ -358,6 +369,17 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
             }
         }
     }
+    if dry {
+        // 表の一覧は選択内容の検証より前に出す (壊れた保存済み設定でも
+        // 一覧だけは確認できるようにする復旧用途)
+        println!("登録済みの難易度表:");
+        for (id, label) in &table_list {
+            println!(
+                "  ID {id}: {label} (レベル: {})",
+                lib.levels(*id).join(", ")
+            );
+        }
+    }
     if cli_mode && !dry {
         // CLI では対話に落とさない。必須項目が欠けたら設定エラーで終了する
         // (dry-run では必須チェックを外し、表の一覧確認に使えるようにする)
@@ -446,13 +468,6 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
 
     if dry {
         println!("\n[dry-run] 起動はしません。最初の選曲だけ表示します。");
-        println!("登録済みの難易度表:");
-        for (id, label) in &table_list {
-            println!(
-                "  ID {id}: {label} (レベル: {})",
-                lib.levels(*id).join(", ")
-            );
-        }
         let lv = &levels[level_idx];
         let n_entries = lib.count_entries(table_id, lv);
         let charts = lib.charts_in_level(table_id, lv);

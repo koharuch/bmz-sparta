@@ -25,15 +25,29 @@ pub fn hud_pos_path() -> PathBuf {
 }
 
 pub fn load_config() -> Value {
+    load_config_checked().0
+}
+
+/// (設定, 読み込み失敗の理由)。ファイルが存在するのに読めない・
+/// 解釈できない場合は理由が入る (未作成とは区別する)
+pub fn load_config_checked() -> (Value, Option<String>) {
     let p = config_path();
-    if p.exists() {
-        if let Ok(text) = std::fs::read_to_string(&p) {
-            if let Ok(v) = serde_json::from_str(text.trim_start_matches('\u{feff}')) {
-                return v;
-            }
-        }
+    if !p.exists() {
+        return (Value::Object(Map::new()), None);
     }
-    Value::Object(Map::new())
+    match std::fs::read_to_string(&p) {
+        Ok(text) => match serde_json::from_str(text.trim_start_matches('\u{feff}')) {
+            Ok(v) => (v, None),
+            Err(e) => (
+                Value::Object(Map::new()),
+                Some(format!("sparta.json の解析に失敗しました: {e}")),
+            ),
+        },
+        Err(e) => (
+            Value::Object(Map::new()),
+            Some(format!("sparta.json を読めませんでした: {e}")),
+        ),
+    }
 }
 
 /// 設定を保存する。一時ファイルへ書いてから置換するので、

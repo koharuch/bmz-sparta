@@ -472,7 +472,11 @@ pub fn merge_and_generate(cur: &SessionReport) -> Option<PathBuf> {
             "警告: 日次集計 (sparta-day.json) の保存に失敗しました。今回の結果は次回のレポートに引き継がれません。"
         );
     }
-    generate(&combined)
+    let out = generate(&combined);
+    if out.is_none() {
+        eprintln!("警告: 結果レポートHTMLの保存に失敗しました。");
+    }
+    out
 }
 
 /// 既定ブラウザでファイルを開く (Windows)
