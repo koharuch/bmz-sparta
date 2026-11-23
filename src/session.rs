@@ -195,7 +195,7 @@ fn open_env(
 pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
     let mut cfg = if setup { json!({}) } else { load_config() };
 
-    let mut bmz_dir = match find_bmz_dir(&cfg) {
+    let mut bmz_dir = match crate::config::resolve_bmz_dir(&cfg) {
         Some(d) => d,
         None => {
             if !dry && !console {

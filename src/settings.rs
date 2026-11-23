@@ -12,7 +12,7 @@ use std::collections::HashMap;
 /// None = キャンセルされた
 #[cfg(not(windows))]
 pub fn locate_bmz(cfg: &Value) -> Option<std::path::PathBuf> {
-    crate::config::find_bmz_dir(cfg)
+    crate::config::resolve_bmz_dir(cfg)
 }
 
 #[cfg(windows)]
@@ -1043,7 +1043,7 @@ mod win {
     /// -P --skip-result は one-shot Viewer (自動再生・スコア保存なし) で、
     /// 1曲終わるとプロセスが終了する
     fn launch_viewer(st: &State) -> Option<std::process::Child> {
-        let dir = crate::config::find_bmz_dir(&st.cfg)?;
+        let dir = crate::config::resolve_bmz_dir(&st.cfg)?;
         let con = crate::db::open_ro(&dir.join("data").join("library.db")).ok()?;
         let mut lib = crate::db::Library::with_connection(con).ok()?;
         let chart = pick_random_chart(&mut lib, &st.cfg)?;
@@ -1642,10 +1642,19 @@ mod win {
                 font,
             );
             // 状態/エラーログ (読み取り専用EDIT)
+            let initial = match crate::config::cfg_str(cfg, "bmz_dir") {
+                Some(d) => format!(
+                    "保存済みの場所が見つかりませんでした:\r\n{d}\r\n\r\n「自動検出」か「参照...」を押してください。"
+                ),
+                None => {
+                    "まだ指定されていません。「自動検出」か「参照...」を押してください。"
+                        .to_string()
+                }
+            };
             let h_status = make(
                 hwnd,
                 w!("EDIT"),
-                "まだ指定されていません。「自動検出」か「参照...」を押してください。",
+                &initial,
                 WS_BORDER.0 | 0x0004 | 0x0800 | 0x0040, // MULTILINE | READONLY | AUTOVSCROLL
                 16,
                 44,

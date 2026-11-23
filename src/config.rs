@@ -94,6 +94,22 @@ pub fn find_bmz_dir(cfg: &Value) -> Option<PathBuf> {
         .find(|d| d.join("bmz-player.exe").exists())
 }
 
+/// bmz_dir の解決ルール:
+/// 手動指定 (cfg の bmz_dir) がある場合はそれだけを信じ、見つからなくても
+/// 標準インストール先へ勝手に切り替えない (再スキャンで指定を潰さない)。
+/// 手動指定が無い場合のみ自動検出する
+pub fn resolve_bmz_dir(cfg: &Value) -> Option<PathBuf> {
+    if let Some(d) = cfg_str(cfg, "bmz_dir") {
+        let p = PathBuf::from(d);
+        return if p.join("bmz-player.exe").exists() {
+            Some(p)
+        } else {
+            None
+        };
+    }
+    find_bmz_dir(cfg)
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .map(PathBuf::from)
