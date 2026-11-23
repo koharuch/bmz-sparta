@@ -24,6 +24,9 @@
 3. bmz-player の標準インストール先は `%LOCALAPPDATA%\Programs\BMZ Player`。
    自動検出はこの場所だけが対象。それ以外に置いてある場合は
    `--bmz-dir` か `sparta.json` の `bmz_dir` で明示する。
+4. プロファイルが複数ある場合、`sparta.json` の `profile` で監視対象を
+   明示すること。bmz-player 側で有効なプロファイルと一致していないと、
+   プレイと履歴監視がずれる。未指定で複数ある場合はエラーで停止する。
 
 ## セットアップ手順
 

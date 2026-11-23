@@ -1410,16 +1410,28 @@ bmz-player のインストールフォルダを選んでください。"
                         }
                         Some(true) => match unsafe { warn_unsaved(hwnd) } {
                             6 => {
-                                // はい: 保存して開始
+                                // はい: 保存して開始 (失敗したら開始しない)
+                                let mut saved = false;
                                 STATE.with(|s| {
                                     if let Some(st) = s.borrow_mut().as_mut() {
                                         if crate::config::save_config(&st.cfg) {
                                             st.saved_cfg = st.cfg.clone();
+                                            st.result = Some((true, true));
+                                            saved = true;
                                         }
-                                        st.result = Some((true, true));
                                     }
                                 });
-                                proceed = true;
+                                if saved {
+                                    proceed = true;
+                                } else {
+                                    unsafe {
+                                        message_box(
+                                            hwnd,
+                                            "設定ファイルへの保存に失敗しました。",
+                                            "保存",
+                                        )
+                                    };
+                                }
                             }
                             7 => {
                                 // いいえ: 保存せず開始 (今回のセッション限り)

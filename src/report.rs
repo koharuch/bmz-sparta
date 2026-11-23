@@ -463,8 +463,14 @@ pub fn merge_and_generate(cur: &SessionReport) -> Option<PathBuf> {
     let text = serde_json::to_string_pretty(&state).unwrap_or_default();
     let path = day_state_path();
     let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, text).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+    let saved = std::fs::write(&tmp, text)
+        .ok()
+        .and_then(|_| std::fs::rename(&tmp, &path).ok())
+        .is_some();
+    if !saved {
+        eprintln!(
+            "警告: 日次集計 (sparta-day.json) の保存に失敗しました。今回の結果は次回のレポートに引き継がれません。"
+        );
     }
     generate(&combined)
 }

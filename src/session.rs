@@ -110,62 +110,67 @@ fn wait_with_result_timeout(
     status: &StatusWriter,
     stop: &AtomicBool,
     deadline: f64,
-) {
-    let mut seen_at: Option<f64> = None;
+) -> (Option<crate::db::ResultDetail>, bool) {
+    // 検出した結果は保持し、それ以降の待機は DB 読み取りの成否に
+    // 依存させない (読み取りが失敗し続けても期限で必ず抜ける)
+    let mut seen: Option<(f64, crate::db::ResultDetail)> = None;
+    let mut killed = false;
+    let mut abnormal = false;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(st)) => {
+                if !killed && !st.success() {
+                    abnormal = true;
+                }
+                break;
+            }
             Ok(None) => {}
             Err(_) => break,
         }
-        if stop.load(Ordering::SeqCst) && scores.latest_result(chart, mark).is_none() {
-            // 停止要求があり結果も未保存なら即抜ける。結果が保存済みなら
-            // 下の集計に回す (Ctrl+C で完了した曲を取りこぼさない)
-            break;
-        }
-        if seen_at.is_none() && now_secs() >= deadline {
-            // セッション時間の上限: 結果が出ないまま無期限に待たない
-            let _ = child.kill();
-            break;
-        }
-        if scores.latest_result(chart, mark).is_some() {
-            if seen_at.is_none() {
-                let t = now_secs();
-                seen_at = Some(t);
-                // HUD 用の付加情報。失敗してもセッションは止めない
-                let det = scores.latest_detail(chart, mark);
-                let (lamp, score_fmt, bp, gain) = match &det {
-                    Some(d) => (
-                        lamp_name(d.clear_type).map(|s| json!(s)).unwrap_or(Value::Null),
-                        grade_fmt(d.ex_score, total_notes)
-                            .map(|s| json!(s))
-                            .unwrap_or(Value::Null),
-                        d.bp.map(|v| json!(v)).unwrap_or(Value::Null),
-                        clear_points(rules, d.clear_type),
-                    ),
-                    None => (Value::Null, Value::Null, Value::Null, 0),
-                };
-                status.write(
-                    true,
-                    crate::status_fields!(
-                        "state" => json!("result"),
-                        "skip_deadline" => json!((t as i64) + result_seconds),
-                        "skip_total" => json!(result_seconds),
-                        "last_lamp" => lamp,
-                        "last_score_fmt" => score_fmt,
-                        "last_bp" => bp,
-                        "last_gain" => json!(gain),
-                    ),
-                );
-            } else {
+        match &seen {
+            None => {
+                if stop.load(Ordering::SeqCst) && scores.latest_result(chart, mark).is_none() {
+                    // 停止要求があり結果も未保存なら即抜ける。結果が保存済みなら
+                    // 集計に回す (Ctrl+C で完了した曲を取りこぼさない)
+                    break;
+                }
+                if now_secs() >= deadline {
+                    // セッション時間の上限: 結果が出ないまま無期限に待たない
+                    let _ = child.kill();
+                    killed = true;
+                    break;
+                }
+                if let Some(det) = scores.latest_detail(chart, mark) {
+                    let t = now_secs();
+                    status.write(
+                        true,
+                        crate::status_fields!(
+                            "state" => json!("result"),
+                            "skip_deadline" => json!((t as i64) + result_seconds),
+                            "skip_total" => json!(result_seconds),
+                            "last_lamp" => lamp_name(det.clear_type)
+                                .map(|s| json!(s))
+                                .unwrap_or(Value::Null),
+                            "last_score_fmt" => grade_fmt(det.ex_score, total_notes)
+                                .map(|s| json!(s))
+                                .unwrap_or(Value::Null),
+                            "last_bp" => det.bp.map(|v| json!(v)).unwrap_or(Value::Null),
+                            "last_gain" => json!(clear_points(rules, det.clear_type)),
+                        ),
+                    );
+                    seen = Some((t, det));
+                }
+            }
+            Some((t0, _)) => {
                 // 停止要求時は短い猶予で切り上げる
                 let grace = if stop.load(Ordering::SeqCst) {
                     2.0
                 } else {
                     result_seconds as f64
                 };
-                if now_secs() - seen_at.unwrap() >= grace {
+                if now_secs() - t0 >= grace {
                     let _ = child.kill();
+                    killed = true;
                     break;
                 }
             }
@@ -173,15 +178,32 @@ fn wait_with_result_timeout(
         std::thread::sleep(Duration::from_secs(1));
     }
     // 終了待ち (最大10秒 -> kill)
+    let mut exited = false;
     for _ in 0..100 {
         match child.try_wait() {
-            Ok(Some(_)) => return,
+            Ok(Some(st)) => {
+                if !killed && !st.success() {
+                    abnormal = true;
+                }
+                exited = true;
+                break;
+            }
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),
-            Err(_) => return,
+            Err(_) => {
+                exited = true;
+                break;
+            }
         }
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    if !exited {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    // 検出済みの結果を優先し、無ければ最後にもう一度だけ読みに行く
+    let det = seen
+        .map(|(_, d)| d)
+        .or_else(|| scores.latest_detail(chart, mark));
+    (det, abnormal)
 }
 
 /// bmz_dir から library / score / 難易度表を開く。
@@ -320,16 +342,33 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
     }
     // ルールは GUI での変更後の cfg から作る (開始直後のセッションにも反映する)
     let rules = Rules::from_config(&cfg);
-    if cli_mode {
+    // 列挙値の共通検証 (GUI/JSON/CLI どの入口でも不正値を子プロセスへ渡さない)
+    for (key, valid) in [
+        ("gauge", &crate::cli::GAUGES[..]),
+        ("gas", &crate::cli::GASES[..]),
+        ("pick_mode", &crate::cli::PICKS[..]),
+    ] {
+        if let Some(v) = cfg_str(&cfg, key) {
+            if !valid.contains(&v.as_str()) {
+                eprintln!(
+                    "エラー: {key} の値が不正です: {v} (有効な値: {})",
+                    valid.join(" | ")
+                );
+                return if cli_mode { 2 } else { 1 };
+            }
+        }
+    }
+    if cli_mode && !dry {
         // CLI では対話に落とさない。必須項目が欠けたら設定エラーで終了する
+        // (dry-run では必須チェックを外し、表の一覧確認に使えるようにする)
         let mut missing: Vec<&str> = Vec::new();
-        if cfg.get("table_id").is_none() {
+        if cfg_i64(&cfg, "table_id").is_none() {
             missing.push("table_id (--table)");
         }
-        if cfg.get("start_level").is_none() {
+        if cfg_str(&cfg, "start_level").is_none() {
             missing.push("start_level (--level)");
         }
-        if cfg.get("minutes").is_none() {
+        if cfg_i64(&cfg, "minutes").is_none() {
             missing.push("minutes (--minutes)");
         }
         if !missing.is_empty() {
@@ -375,7 +414,9 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
         cfg_set(&mut cfg, "minutes", json!(v));
     }
     if (!gui_done || gui_persist) && !cli_mode {
-        save_config(&cfg);
+        if !save_config(&cfg) {
+            println!("警告: sparta.json への保存に失敗しました。");
+        }
     }
 
     let level = cfg_str(&cfg, "start_level").unwrap_or_else(|| levels[0].clone());
@@ -405,6 +446,13 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
 
     if dry {
         println!("\n[dry-run] 起動はしません。最初の選曲だけ表示します。");
+        println!("登録済みの難易度表:");
+        for (id, label) in &table_list {
+            println!(
+                "  ID {id}: {label} (レベル: {})",
+                lib.levels(*id).join(", ")
+            );
+        }
         let lv = &levels[level_idx];
         let n_entries = lib.count_entries(table_id, lv);
         let charts = lib.charts_in_level(table_id, lv);
@@ -572,7 +620,7 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
                 break;
             }
         };
-        wait_with_result_timeout(
+        let (det, abnormal) = wait_with_result_timeout(
             &mut proc,
             &scores,
             &chart,
@@ -584,18 +632,23 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
             &stop,
             deadline,
         );
-        let result = scores.latest_result(&chart, mark);
-        if stop.load(Ordering::SeqCst) && result.is_none() {
+        if abnormal {
+            println!("  bmz-player が異常終了しました。この曲はノーカウントとし、セッションを終了します。");
+            exit_code = 1;
+            break;
+        }
+        if stop.load(Ordering::SeqCst) && det.is_none() {
             let _ = proc.kill();
             break;
         }
-        let result = match result {
-            Some(r) => r,
+        let det = match det {
+            Some(d) => d,
             None => {
                 println!("  結果なし (中断としてノーカウント)");
                 continue;
             }
         };
+        let result = det.clear_type;
         played += 1;
         let gained = clear_points(&rules, result);
         if result >= CLEAR_MIN {
@@ -624,15 +677,12 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
             event = Some(format!("LEVEL DOWN → {}", level_label(&levels[level_idx])));
         }
         *bucket_counts.entry(crate::report::lamp_bucket(result)).or_insert(0) += 1;
-        let det = scores.latest_detail(&chart, mark);
         history.push(crate::report::SongRow {
             level: level_label(&lv),
             title: chart.title.clone(),
             lamp: lamp_name(result).unwrap_or("?").to_string(),
-            score_fmt: det
-                .as_ref()
-                .and_then(|d| grade_fmt(d.ex_score, total_notes)),
-            bp: det.as_ref().and_then(|d| d.bp),
+            score_fmt: grade_fmt(det.ex_score, total_notes),
+            bp: det.bp,
             gained,
             event,
         });
@@ -662,7 +712,7 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
         let _ = hud.wait();
     }
     let _ = std::fs::remove_file(crate::config::session_cfg_path());
-    if played > 0 && cfg_bool(&cfg, "report", true) {
+    if played > 0 {
         let lamp_counts: Vec<(String, i64)> = crate::report::LAMP_ORDER
             .iter()
             .filter_map(|l| bucket_counts.get(l).map(|n| (l.to_string(), *n)))
@@ -686,9 +736,13 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
             lamp_counts,
             songs: history,
         };
+        // 日次集計と HTML 生成は常に行い、report 設定は
+        // 「ブラウザで自動的に開くか」だけを制御する
         if let Some(p) = crate::report::merge_and_generate(&rep) {
             println!("結果レポート: {}", p.display());
-            crate::report::open_in_browser(&p);
+            if cfg_bool(&cfg, "report", true) {
+                crate::report::open_in_browser(&p);
+            }
         }
     }
     println!(
