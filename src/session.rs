@@ -192,13 +192,27 @@ fn open_env(
     Ok((lib, scores, tables))
 }
 
-pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
+pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>) -> i32 {
     let mut cfg = if setup { json!({}) } else { load_config() };
+    // CLI (run サブコマンド) の上書きはメモリ上だけ。sparta.json へは書き戻さない
+    let cli_mode = cli.is_some();
+    if let Some(ov) = &cli {
+        if let Some(obj) = ov.as_object() {
+            for (k, v) in obj {
+                cfg_set(&mut cfg, k, v.clone());
+            }
+        }
+    }
 
     let mut bmz_dir = match crate::config::resolve_bmz_dir(&cfg) {
         Some(d) => d,
         None => {
-            if !dry && !console {
+            if cli_mode {
+                eprintln!(
+                    "エラー: bmz-player が見つかりません。--bmz-dir で指定するか、標準インストール先に置くか、sparta.json の bmz_dir を設定してください。"
+                );
+                return 2;
+            } else if !dry && !console {
                 // GUI起動時: コンソールで聞かず、場所指定ダイアログで選んでもらう
                 match crate::settings::locate_bmz(&cfg) {
                     Some(d) => d,
@@ -235,7 +249,7 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
     // 設定GUI (Windows)。キャンセルされたら終了、使えなければ対話へ落とす
     let mut gui_done = false;
     let mut gui_persist = true;
-    if !dry && !console {
+    if !dry && !console && !cli_mode {
         let levels_map: std::collections::HashMap<i64, Vec<String>> = table_list
             .iter()
             .map(|(id, _)| (*id, lib.levels(*id)))
@@ -286,7 +300,27 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
     }
     // ルールは GUI での変更後の cfg から作る (開始直後のセッションにも反映する)
     let rules = Rules::from_config(&cfg);
-    if !gui_done && (cfg.get("table_id").is_none() || setup) {
+    if cli_mode {
+        // CLI では対話に落とさない。必須項目が欠けたら設定エラーで終了する
+        let mut missing: Vec<&str> = Vec::new();
+        if cfg.get("table_id").is_none() {
+            missing.push("table_id (--table)");
+        }
+        if cfg.get("start_level").is_none() {
+            missing.push("start_level (--level)");
+        }
+        if cfg.get("minutes").is_none() {
+            missing.push("minutes (--minutes)");
+        }
+        if !missing.is_empty() {
+            eprintln!(
+                "エラー: 設定が不足しています: {}。引数で指定するか sparta.json に設定してください。",
+                missing.join(", ")
+            );
+            return 2;
+        }
+    }
+    if !gui_done && !cli_mode && (cfg.get("table_id").is_none() || setup) {
         println!("\n登録済みの難易度表:");
         for (i, (_, label)) in table_list.iter().enumerate() {
             println!("  {i}: {label}");
@@ -310,17 +344,17 @@ pub fn run(dry: bool, setup: bool, console: bool) -> i32 {
         return 1;
     }
     println!("レベル一覧: {}", levels.join(", "));
-    if !gui_done && (cfg.get("start_level").is_none() || setup) {
+    if !gui_done && !cli_mode && (cfg.get("start_level").is_none() || setup) {
         let v = ask("開始レベル: ", Some(&levels[0])).unwrap_or_else(|| levels[0].clone());
         cfg_set(&mut cfg, "start_level", json!(v));
     }
-    if !gui_done && (cfg.get("minutes").is_none() || setup) {
+    if !gui_done && !cli_mode && (cfg.get("minutes").is_none() || setup) {
         let v: i64 = ask("セッション時間 (分): ", Some("60"))
             .and_then(|s| s.parse().ok())
             .unwrap_or(60);
         cfg_set(&mut cfg, "minutes", json!(v));
     }
-    if !gui_done || gui_persist {
+    if (!gui_done || gui_persist) && !cli_mode {
         save_config(&cfg);
     }
 
