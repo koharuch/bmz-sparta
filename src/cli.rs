@@ -74,8 +74,8 @@ pub fn parse(args: &[String]) -> Result<RunArgs, String> {
                 let n: i64 = v
                     .parse()
                     .map_err(|_| format!("--minutes は数値で指定してください: {v}"))?;
-                if n < 1 {
-                    return Err("--minutes は1以上で指定してください".into());
+                if !(1..=10080).contains(&n) {
+                    return Err("--minutes は1〜10080で指定してください".into());
                 }
                 obj.insert("minutes".into(), json!(n));
             }

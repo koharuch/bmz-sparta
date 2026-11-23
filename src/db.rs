@@ -295,14 +295,21 @@ impl Library {
             ))
         });
         let mut out = Vec::new();
-        let mut seen_sha: HashSet<Option<String>> = HashSet::new();
+        let mut seen_keys: HashSet<String> = HashSet::new();
         if let Ok(rows) = rows {
-            for row in rows.flatten() {
+            for (row_idx, row) in rows.flatten().enumerate() {
                 let (cid, csha, cmd5, ctitle, etitle) = row;
-                if seen_sha.contains(&csha) {
+                // 重複判定キー: SHA-256 → MD5 → chart_id → 行番号 の順。
+                // 識別子が無い譜面同士を同一視して落とさないため
+                let key = csha
+                    .clone()
+                    .or_else(|| cmd5.clone())
+                    .or_else(|| cid.map(|i| format!("id:{i}")))
+                    .unwrap_or_else(|| format!("row:{row_idx}"));
+                if seen_keys.contains(&key) {
                     continue;
                 }
-                seen_sha.insert(csha.clone());
+                seen_keys.insert(key);
                 let path = self.file_path(cid, csha.as_deref(), cmd5.as_deref());
                 out.push(Chart {
                     chart_id: cid,
@@ -369,6 +376,10 @@ impl Library {
             .iter()
             .filter(|p| !p.contains("!/") && !p.contains("!\\"))
             .collect();
+        // 実在する展開済み候補を優先する (移動・削除済みの残骸パスを掴まない)
+        if let Some(p) = plain.iter().find(|p| std::path::Path::new(p.as_str()).exists()) {
+            return Some(p.to_string());
+        }
         Some(plain.first().map(|s| s.to_string()).unwrap_or_else(|| uniq[0].clone()))
     }
 }
@@ -505,21 +516,19 @@ impl Scores {
             .unwrap_or(false)
     }
 
-    /// 起動前の履歴最大ID (この後増えた分が今回の結果)
-    pub fn history_mark(&self, chart: &Chart) -> i64 {
-        let (col, kv) = match self.keyval(chart) {
-            Some(x) => x,
-            None => return 0,
-        };
+    /// 起動前の履歴最大ID (この後増えた分が今回の結果)。
+    /// 読み取りに失敗した場合は None (0 と区別する。失敗を 0 として
+    /// 扱うと、回復後に過去の結果を今回の結果と誤認する)
+    pub fn history_mark(&self, chart: &Chart) -> Option<i64> {
+        let (col, kv) = self.keyval(chart)?;
         let sql = format!(
             "SELECT MAX({}) FROM score_history WHERE {col} = ?",
             self.id_col
         );
-        self.con
-            .query_row(&sql, [kv], |r| r.get::<_, Option<i64>>(0))
-            .ok()
-            .flatten()
-            .unwrap_or(0)
+        match self.con.query_row(&sql, [kv], |r| r.get::<_, Option<i64>>(0)) {
+            Ok(v) => Some(v.unwrap_or(0)),
+            Err(_) => None,
+        }
     }
 
     /// 起動後に増えた最新の履歴の clear_type (数値)。無ければ None
@@ -629,7 +638,7 @@ mod tests {
         let a = chart_a();
         assert_eq!(sc.best_clear(&a), 6);
         assert!(sc.played_ever(&a));
-        assert_eq!(sc.history_mark(&a), 2);
+        assert_eq!(sc.history_mark(&a), Some(2));
         assert_eq!(sc.latest_result(&a, 1), Some(6));
         assert_eq!(sc.latest_result(&a, 2), None);
         let best = sc.best_detail(&a).unwrap();

@@ -52,6 +52,26 @@ run のオプション (未指定なら sparta.json の値を使う。指定は�
 
 終了コード: 0=正常 / 1=実行時エラー / 2=引数・設定エラー (対話には落とさない)";
 
+#[cfg(windows)]
+fn acquire_single_instance() -> Option<windows::Win32::Foundation::HANDLE> {
+    use windows::core::w;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+    unsafe {
+        let h = CreateMutexW(None, true, w!("bmz-sparta-single-instance")).ok()?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let _ = windows::Win32::Foundation::CloseHandle(h);
+            return None;
+        }
+        Some(h)
+    }
+}
+
+#[cfg(not(windows))]
+fn acquire_single_instance() -> Option<()> {
+    Some(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h" || a == "help") {
@@ -59,7 +79,21 @@ fn main() {
         return;
     }
     let preview = args.iter().any(|a| a == "--preview");
-    let code = if args.iter().any(|a| a == "hud") {
+    let is_hud = args.first().map(|s| s.as_str()) == Some("hud");
+    // 二重起動防止 (hud 子プロセスを除く)。状態ファイルや日次集計が
+    // 複数プロセスから同時に書かれると混線するため
+    let _instance = if is_hud {
+        None
+    } else {
+        match acquire_single_instance() {
+            Some(h) => Some(h),
+            None => {
+                eprintln!("bmz-sparta は既に起動しています。");
+                std::process::exit(1);
+            }
+        }
+    };
+    let code = if is_hud {
         hud::run_hud(preview)
     } else if args.first().map(|s| s.as_str()) == Some("run") {
         match cli::parse(&args[1..]) {

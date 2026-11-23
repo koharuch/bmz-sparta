@@ -35,18 +35,23 @@ fn ask(prompt: &str, default: Option<&str>) -> Option<String> {
 }
 
 /// 選曲。mode: "priority" (未プレイ/未クリア優先) / "noplay_failed" / "random"
+/// 使用済み管理のキー。chart_id が無い譜面でもパスで区別できる
+fn chart_key(c: &Chart) -> String {
+    format!("{:?}|{}", c.chart_id, c.path.as_deref().unwrap_or(""))
+}
+
 pub fn choose_chart(
     lib: &Library,
     scores: &Scores,
     table_id: i64,
     level: &str,
-    used: &HashSet<Option<i64>>,
+    used: &HashSet<String>,
     mode: &str,
 ) -> Option<Chart> {
     let pool: Vec<Chart> = lib
         .charts_in_level(table_id, level)
         .into_iter()
-        .filter(|c| c.path.is_some() && !used.contains(&c.chart_id))
+        .filter(|c| c.path.is_some() && !used.contains(&chart_key(c)))
         .collect();
     if pool.is_empty() {
         return None;
@@ -104,6 +109,7 @@ fn wait_with_result_timeout(
     rules: &Rules,
     status: &StatusWriter,
     stop: &AtomicBool,
+    deadline: f64,
 ) {
     let mut seen_at: Option<f64> = None;
     loop {
@@ -112,7 +118,14 @@ fn wait_with_result_timeout(
             Ok(None) => {}
             Err(_) => break,
         }
-        if stop.load(Ordering::SeqCst) {
+        if stop.load(Ordering::SeqCst) && scores.latest_result(chart, mark).is_none() {
+            // 停止要求があり結果も未保存なら即抜ける。結果が保存済みなら
+            // 下の集計に回す (Ctrl+C で完了した曲を取りこぼさない)
+            break;
+        }
+        if seen_at.is_none() && now_secs() >= deadline {
+            // セッション時間の上限: 結果が出ないまま無期限に待たない
+            let _ = child.kill();
             break;
         }
         if scores.latest_result(chart, mark).is_some() {
@@ -144,9 +157,17 @@ fn wait_with_result_timeout(
                         "last_gain" => json!(gain),
                     ),
                 );
-            } else if now_secs() - seen_at.unwrap() >= result_seconds as f64 {
-                let _ = child.kill();
-                break;
+            } else {
+                // 停止要求時は短い猶予で切り上げる
+                let grace = if stop.load(Ordering::SeqCst) {
+                    2.0
+                } else {
+                    result_seconds as f64
+                };
+                if now_secs() - seen_at.unwrap() >= grace {
+                    let _ = child.kill();
+                    break;
+                }
             }
         }
         std::thread::sleep(Duration::from_secs(1));
@@ -176,8 +197,7 @@ fn open_env(
             lib_db.display()
         ));
     }
-    let score_db = find_score_db(bmz_dir, cfg)
-        .ok_or_else(|| "score.db が見つかりませんでした。".to_string())?;
+    let score_db = find_score_db(bmz_dir, cfg)?;
     println!("score   : {}", score_db.display());
     let mut lib = Library::open(&lib_db)
         .map_err(|e| format!("library.db を開けませんでした: {e}"))?;
@@ -376,8 +396,10 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
     };
 
     let start_level_idx = level_idx;
-    let minutes = cfg_i64(&cfg, "minutes").unwrap_or(60);
-    let result_seconds = cfg_i64(&cfg, "result_seconds").unwrap_or(20);
+    let minutes = cfg_i64(&cfg, "minutes").unwrap_or(60).clamp(1, 10080);
+    let result_seconds = cfg_i64(&cfg, "result_seconds")
+        .unwrap_or(20)
+        .clamp(0, 3600);
     let deadline = now_secs() + (minutes * 60) as f64;
     let status = StatusWriter::new();
 
@@ -399,7 +421,8 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
                 first.path.as_deref().unwrap_or("")
             );
         }
-        match choose_chart(&lib, &scores, table_id, lv, &HashSet::new(), "priority") {
+        let mode = cfg_str(&cfg, "pick_mode").unwrap_or_else(|| "priority".to_string());
+        match choose_chart(&lib, &scores, table_id, lv, &HashSet::new(), &mode) {
             Some(c) => println!(
                 "選曲: chart_id={} title={} path={}",
                 c.chart_id.map(|v| v.to_string()).unwrap_or_default(),
@@ -411,6 +434,7 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
         return 0;
     }
 
+    let mut exit_code = 0;
     // Ctrl+C で安全に終了する
     let stop = Arc::new(AtomicBool::new(false));
     {
@@ -422,13 +446,39 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
 
     let mut points: i64 = 0;
     let mut lose: i64 = 0;
-    let mut used: HashSet<Option<i64>> = HashSet::new();
+    let mut used: HashSet<String> = HashSet::new();
     let mut played: i64 = 0;
     let mut cleared: i64 = 0;
     let mut max_idx = level_idx;
     let mut history: Vec<crate::report::SongRow> = Vec::new();
     let mut bucket_counts: std::collections::HashMap<&'static str, i64> =
         std::collections::HashMap::new();
+
+    // HUD が前回の ended 状態を読んで即終了しないよう、先に初期状態を書く
+    status.write(
+        false,
+        crate::status_fields!(
+            "state" => json!("playing"),
+            "level" => json!(level_label(&levels[level_idx])),
+            "table" => json!(table_label),
+            "points" => json!(0),
+            "up_points" => json!(rules.up_points),
+            "pts_exhard" => json!(rules.pts_exhard),
+            "pts_hard" => json!(rules.pts_hard),
+            "pts_clear" => json!(rules.pts_clear),
+            "lose" => json!(0),
+            "lose_max" => json!(rules.fail_streak),
+            "song" => json!(0),
+            "cleared" => json!(0),
+            "deadline" => json!(deadline as i64),
+            "title" => json!(""),
+        ),
+    );
+    // 実効設定を HUD へ渡す (「保存せず開始」でも今回の設定が反映される)
+    let _ = std::fs::write(
+        crate::config::session_cfg_path(),
+        serde_json::to_string(&cfg).unwrap_or_default(),
+    );
 
     // HUD は同じ exe を子プロセスとして起動する (状態ファイル経由で分離)
     let mut hud_proc: Option<Child> = None;
@@ -442,8 +492,16 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
         "\n=== スパルタ開始: レベル {} / 上限 {minutes}分 ===",
         levels[level_idx]
     );
-    println!("レベルUP: EXHARD以上 1回 / HARD 2回 / NORMAL・EASY 3回 (点数制)");
-    println!("レベルDOWN: 3連続 fail / ゲージはプロファイル設定のまま");
+    println!(
+        "レベルUP: {}点制 (EX HARD以上 {}点 / HARD {}点 / CLEAR・EASY {}点)",
+        rules.up_points, rules.pts_exhard, rules.pts_hard, rules.pts_clear
+    );
+    println!(
+        "レベルDOWN: {}連続 fail / ゲージ {} / GAS {}",
+        rules.fail_streak,
+        cfg_str(&cfg, "gauge").unwrap_or_else(|| "プロファイル設定".to_string()),
+        cfg_str(&cfg, "gas").unwrap_or_else(|| "プロファイル設定".to_string())
+    );
     println!("終了: Ctrl+C\n");
 
     while now_secs() < deadline && !stop.load(Ordering::SeqCst) {
@@ -456,7 +514,7 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
                 break;
             }
         };
-        used.insert(chart.chart_id);
+        used.insert(chart_key(&chart));
         let remain = ((deadline - now_secs()) / 60.0) as i64;
         println!(
             "[{}曲目] レベル {lv} | UPまで {points}/{}点 / 連敗 {lose} | 残り約{remain}分",
@@ -489,7 +547,13 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
                 "prev_bp" => best.as_ref().and_then(|b| b.bp).map(|v| json!(v)).unwrap_or(Value::Null),
             ),
         );
-        let mark = scores.history_mark(&chart);
+        let mark = match scores.history_mark(&chart) {
+            Some(m) => m,
+            None => {
+                println!("  結果履歴の基準を取得できませんでした (score.db 読み取りエラー)。この曲はスキップします。");
+                continue;
+            }
+        };
         // Decide画面は通さず直接Playへ入る (Resultは表示したまま。
         // 終了は wait_with_result_timeout が結果保存後に行う)
         let mut cmd = Command::new(&exe);
@@ -504,6 +568,7 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
             Ok(p) => p,
             Err(e) => {
                 println!("bmz-player の起動に失敗しました: {e}");
+                exit_code = 1;
                 break;
             }
         };
@@ -517,12 +582,13 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
             &rules,
             &status,
             &stop,
+            deadline,
         );
-        if stop.load(Ordering::SeqCst) {
+        let result = scores.latest_result(&chart, mark);
+        if stop.load(Ordering::SeqCst) && result.is_none() {
             let _ = proc.kill();
             break;
         }
-        let result = scores.latest_result(&chart, mark);
         let result = match result {
             Some(r) => r,
             None => {
@@ -532,7 +598,7 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
         };
         played += 1;
         let gained = clear_points(&rules, result);
-        if gained > 0 {
+        if result >= CLEAR_MIN {
             cleared += 1;
             points += gained;
             lose = 0;
@@ -595,6 +661,7 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
         let _ = hud.kill();
         let _ = hud.wait();
     }
+    let _ = std::fs::remove_file(crate::config::session_cfg_path());
     if played > 0 && cfg_bool(&cfg, "report", true) {
         let lamp_counts: Vec<(String, i64)> = crate::report::LAMP_ORDER
             .iter()
@@ -607,6 +674,9 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
             ended_unix: end_now,
             date_label,
             day_key,
+            table_id,
+            max_level_idx: max_idx as i64,
+            stem: String::new(),
             table: table_label.clone(),
             start_level: level_label(&levels[start_level_idx]),
             final_level: level_label(&levels[level_idx]),
@@ -625,5 +695,5 @@ pub fn run(dry: bool, setup: bool, console: bool, cli: Option<serde_json::Value>
         "\n=== 終了: {played}曲プレイ / {cleared}クリア / 最終レベル {} ===",
         levels[level_idx]
     );
-    0
+    exit_code
 }

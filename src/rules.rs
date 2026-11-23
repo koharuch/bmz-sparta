@@ -51,6 +51,12 @@ impl Rules {
         if let Some(v) = get("fail_streak") {
             r.fail_streak = v;
         }
+        // どの入口 (GUI/JSON/CLI) から来ても壊れた値にならないよう丸める
+        r.up_points = r.up_points.clamp(1, 99);
+        r.pts_exhard = r.pts_exhard.clamp(0, 99);
+        r.pts_hard = r.pts_hard.clamp(0, 99);
+        r.pts_clear = r.pts_clear.clamp(0, 99);
+        r.fail_streak = r.fail_streak.clamp(1, 99);
         r
     }
 }

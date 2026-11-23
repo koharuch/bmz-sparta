@@ -49,11 +49,15 @@ mod win {
     use serde_json::json;
     use std::cell::RefCell;
     use windows::core::{w, PCWSTR, PWSTR};
-    use windows::Win32::UI::Controls::{NMHDR, TCITEMHEADERA_MASK, TCITEMW};
+    use windows::Win32::UI::Controls::{
+        InitCommonControlsEx, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX, NMHDR, TCITEMHEADERA_MASK,
+        TCITEMW,
+    };
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::Graphics::Gdi::*;
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
+        COINIT_APARTMENTTHREADED,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::Shell::{
@@ -201,6 +205,8 @@ mod win {
 
     struct State {
         cfg: Value,
+        font: HFONT,
+        note_font: HFONT,
         bmz_label: String,
         tables: Vec<(i64, String)>,
         levels_map: HashMap<i64, Vec<String>>,
@@ -369,6 +375,12 @@ mod win {
             0,
             w!("Yu Gothic UI"),
         );
+        STATE.with(|st| {
+            if let Some(state) = st.borrow_mut().as_mut() {
+                state.font = font;
+                state.note_font = note_font;
+            }
+        });
         STATE.with(|s| {
             let mut guard = s.borrow_mut();
             let Some(st) = guard.as_mut() else { return };
@@ -1123,41 +1135,30 @@ mod win {
         }
     }
 
-    /// 「参照...」: bmz-player のインストールフォルダを選び直す。
-    /// 複数インストール (バージョン違い等) がある人向けの手動指定
-    unsafe fn browse_bmz_dir(hwnd: HWND, st: &mut State) {
-        if let Some(dir) = pick_folder(hwnd) {
-            apply_bmz_dir(hwnd, st, &dir.to_string_lossy());
-        }
-    }
-
-    /// 選ばれたフォルダを検証し、難易度表コンボ等を作り直す
-    unsafe fn apply_bmz_dir(hwnd: HWND, st: &mut State, path: &str) {
+    /// 選ばれたフォルダを検証し、難易度表コンボ等を作り直す。
+    /// 検証に失敗した場合は表示すべきエラー文を返す
+    /// (呼び出し側が STATE の借用を解放してからメッセージボックスを出す)
+    unsafe fn apply_bmz_dir(st: &mut State, path: &str) -> Option<String> {
         let dir = std::path::PathBuf::from(path);
         let lib_db = dir.join("data").join("library.db");
         if !dir.join("bmz-player.exe").exists() || !lib_db.exists() {
-            message_box(
-                hwnd,
-                "bmz-player.exe と data\\library.db が見つかりませんでした。\nbmz-player のインストールフォルダを選んでください。",
-                "フォルダの確認",
+            return Some(
+                "bmz-player.exe と data\\library.db が見つかりませんでした。
+bmz-player のインストールフォルダを選んでください。"
+                    .to_string(),
             );
-            return;
         }
         let mut lib = match crate::db::Library::open(&lib_db) {
             Ok(l) => l,
             Err(_) => {
-                message_box(hwnd, "library.db を開けませんでした。", "フォルダの確認");
-                return;
+                return Some("library.db を開けませんでした。".to_string());
             }
         };
         let tables = lib.list_tables();
         if tables.is_empty() {
-            message_box(
-                hwnd,
-                "そのフォルダの bmz-player には難易度表が登録されていません。",
-                "フォルダの確認",
+            return Some(
+                "そのフォルダの bmz-player には難易度表が登録されていません。".to_string(),
             );
-            return;
         }
         st.levels_map = tables
             .iter()
@@ -1183,6 +1184,7 @@ mod win {
         let start_level = cfg_str(&st.cfg, "start_level");
         refill_levels(st, tid, start_level.as_deref());
         set_text(st.h_bmz_label, &format!("bmz-player: {}", path));
+        None
     }
 
     /// GAS が有効 (OFF 以外) のときはゲージをグレーアウトする。
@@ -1293,11 +1295,21 @@ mod win {
                     });
                     LRESULT(0)
                 } else if id == ID_BROWSE {
-                    STATE.with(|s| {
-                        if let Some(st) = s.borrow_mut().as_mut() {
-                            unsafe { browse_bmz_dir(hwnd, st) };
+                    // フォルダ選択もメッセージボックスもモーダルでメッセージ
+                    // ループを回す。STATE を借用したまま呼ぶと、プレビュー中の
+                    // WM_TIMER 等が再入して RefCell の二重借用で panic する。
+                    // 必ず借用を解放してからダイアログを開くこと
+                    let picked = unsafe { pick_folder(hwnd) };
+                    if let Some(dir) = picked {
+                        let err = STATE.with(|s| {
+                            s.borrow_mut().as_mut().and_then(|st| unsafe {
+                                apply_bmz_dir(st, &dir.to_string_lossy())
+                            })
+                        });
+                        if let Some(msg) = err {
+                            unsafe { message_box(hwnd, &msg, "フォルダの確認") };
                         }
-                    });
+                    }
                     LRESULT(0)
                 } else if id == ID_PRESET && code == CBN_SELCHANGE as usize {
                     STATE.with(|s| {
@@ -1361,43 +1373,67 @@ mod win {
                     });
                     LRESULT(0)
                 } else if id == ID_SAVE {
-                    STATE.with(|s| {
-                        if let Some(st) = s.borrow_mut().as_mut() {
-                            unsafe {
-                                collect(st);
-                                crate::config::save_config(&st.cfg);
-                                st.saved_cfg = st.cfg.clone();
-                            }
-                        }
-                    });
-                    LRESULT(0)
-                } else if id == ID_START {
-                    let mut proceed = false;
+                    let mut failed = false;
                     STATE.with(|s| {
                         if let Some(st) = s.borrow_mut().as_mut() {
                             unsafe { collect(st) };
-                            if st.cfg == st.saved_cfg {
-                                st.result = Some((true, true));
-                                proceed = true;
+                            if crate::config::save_config(&st.cfg) {
+                                st.saved_cfg = st.cfg.clone();
                             } else {
-                                match unsafe { warn_unsaved(hwnd) } {
-                                    6 => {
-                                        // はい: 保存して開始
-                                        crate::config::save_config(&st.cfg);
-                                        st.saved_cfg = st.cfg.clone();
-                                        st.result = Some((true, true));
-                                        proceed = true;
-                                    }
-                                    7 => {
-                                        // いいえ: 保存せず開始 (今回のセッション限り)
-                                        st.result = Some((true, false));
-                                        proceed = true;
-                                    }
-                                    _ => {} // キャンセル: 編集に戻る
-                                }
+                                failed = true;
                             }
                         }
                     });
+                    if failed {
+                        unsafe {
+                            message_box(hwnd, "設定ファイルへの保存に失敗しました。", "保存")
+                        };
+                    }
+                    LRESULT(0)
+                } else if id == ID_START {
+                    // 未保存警告はモーダルなので、借用を解放してから表示する
+                    let dirty = STATE.with(|s| {
+                        s.borrow_mut().as_mut().map(|st| {
+                            unsafe { collect(st) };
+                            st.cfg != st.saved_cfg
+                        })
+                    });
+                    let mut proceed = false;
+                    match dirty {
+                        Some(false) => {
+                            STATE.with(|s| {
+                                if let Some(st) = s.borrow_mut().as_mut() {
+                                    st.result = Some((true, true));
+                                }
+                            });
+                            proceed = true;
+                        }
+                        Some(true) => match unsafe { warn_unsaved(hwnd) } {
+                            6 => {
+                                // はい: 保存して開始
+                                STATE.with(|s| {
+                                    if let Some(st) = s.borrow_mut().as_mut() {
+                                        if crate::config::save_config(&st.cfg) {
+                                            st.saved_cfg = st.cfg.clone();
+                                        }
+                                        st.result = Some((true, true));
+                                    }
+                                });
+                                proceed = true;
+                            }
+                            7 => {
+                                // いいえ: 保存せず開始 (今回のセッション限り)
+                                STATE.with(|s| {
+                                    if let Some(st) = s.borrow_mut().as_mut() {
+                                        st.result = Some((true, false));
+                                    }
+                                });
+                                proceed = true;
+                            }
+                            _ => {} // キャンセル: 編集に戻る
+                        },
+                        None => {}
+                    }
                     if proceed {
                         let _ = DestroyWindow(hwnd);
                     }
@@ -1587,8 +1623,8 @@ mod win {
     }
 
     pub fn locate(cfg: &Value) -> Option<std::path::PathBuf> {
+        let co_ok = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
         unsafe {
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             let _ = SetProcessDpiAwarenessContext(
                 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
             );
@@ -1710,10 +1746,18 @@ mod win {
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            loop {
+                let r = GetMessageW(&mut msg, None, 0, 0);
+                if r.0 <= 0 {
+                    break; // 0 = WM_QUIT / -1 = エラー
+                }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
+            let _ = DeleteObject(HGDIOBJ(font.0));
+        }
+        if co_ok {
+            unsafe { CoUninitialize() };
         }
         LOCATE.with(|s| s.borrow_mut().take().and_then(|st| st.result))
     }
@@ -1728,15 +1772,23 @@ mod win {
         if tables.is_empty() {
             return None;
         }
+        let co_ok = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
         unsafe {
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             let _ = SetProcessDpiAwarenessContext(
                 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
             );
+            // タブコントロール (SysTabControl32) のクラスを確実に登録する
+            let icc = INITCOMMONCONTROLSEX {
+                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+                dwICC: ICC_TAB_CLASSES,
+            };
+            let _ = InitCommonControlsEx(&icc);
         }
         STATE.with(|s| {
             *s.borrow_mut() = Some(State {
                 cfg: cfg.clone(),
+                font: HFONT::default(),
+                note_font: HFONT::default(),
                 bmz_label: bmz_label.to_string(),
                 tables: tables.to_vec(),
                 levels_map: levels_map.clone(),
@@ -1822,13 +1874,17 @@ mod win {
             // 全画面のゲームの上でも設定画面に届くよう最前面にする
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            loop {
+                let r = GetMessageW(&mut msg, None, 0, 0);
+                if r.0 <= 0 {
+                    break; // 0 = WM_QUIT / -1 = エラー
+                }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
         }
         let st = STATE.with(|s| s.borrow_mut().take());
-        match st {
+        let result = match st {
             Some(mut st) => {
                 // プレビューが残っていたら片付ける
                 if let Some(mut child) = st.preview.take() {
@@ -1840,6 +1896,11 @@ mod win {
                     let _ = child.kill();
                     let _ = child.wait();
                 }
+                // ウィンドウは破棄済みなのでフォントを解放できる
+                unsafe {
+                    let _ = DeleteObject(HGDIOBJ(st.font.0));
+                    let _ = DeleteObject(HGDIOBJ(st.note_font.0));
+                }
                 match st.result {
                     Some((true, persist)) => {
                         *cfg = st.cfg;
@@ -1850,6 +1911,10 @@ mod win {
                 }
             }
             None => None,
+        };
+        if co_ok {
+            unsafe { CoUninitialize() };
         }
+        result
     }
 }

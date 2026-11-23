@@ -34,6 +34,12 @@ pub struct SessionReport {
     pub date_label: String,
     /// 論理日付のキー "20261122" (ファイル名・マージ判定用)
     pub day_key: String,
+    /// 難易度表ID (同日でも表が違えば別集計にするためのキー)
+    pub table_id: i64,
+    /// 最高到達レベルの、その表における順位 (文字列比較は使わない)
+    pub max_level_idx: i64,
+    /// 結果HTMLのファイル名の幹 ("" なら day_key。同日に2つ目の表は "-t<id>" 付き)
+    pub stem: String,
     pub table: String,
     pub start_level: String,
     pub final_level: String,
@@ -287,7 +293,8 @@ th {{ color: #9aa0aa; font-weight: normal; }}
 
 /// result-YYYYMMDD.html (論理日付) を exe と同じフォルダへ書き出す
 pub fn generate(r: &SessionReport) -> Option<PathBuf> {
-    let name = format!("result-{}.html", r.day_key);
+    let stem = if r.stem.is_empty() { &r.day_key } else { &r.stem };
+    let name = format!("result-{stem}.html");
     let path = crate::config::base_dir().join(name);
     std::fs::write(&path, render_html(r)).ok()?;
     Some(path)
@@ -330,6 +337,9 @@ fn report_to_json(r: &SessionReport) -> Value {
     }
     json!({
         "day_key": r.day_key,
+        "table_id": r.table_id,
+        "max_level_idx": r.max_level_idx,
+        "stem": r.stem,
         "date_label": r.date_label,
         "table": r.table,
         "start_level": r.start_level,
@@ -360,6 +370,16 @@ fn report_from_json(v: &Value) -> Option<SessionReport> {
         ended_unix: 0.0,
         date_label: v.get("date_label")?.as_str()?.to_string(),
         day_key: v.get("day_key")?.as_str()?.to_string(),
+        table_id: v.get("table_id").and_then(|x| x.as_i64()).unwrap_or(0),
+        max_level_idx: v
+            .get("max_level_idx")
+            .and_then(|x| x.as_i64())
+            .unwrap_or(-1),
+        stem: v
+            .get("stem")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
         table: v.get("table")?.as_str()?.to_string(),
         start_level: v.get("start_level")?.as_str()?.to_string(),
         final_level: v.get("final_level")?.as_str()?.to_string(),
@@ -383,17 +403,18 @@ pub fn merge_reports(prev: &SessionReport, cur: &SessionReport) -> SessionReport
         .collect();
     let mut songs = prev.songs.clone();
     songs.extend(cur.songs.iter().cloned());
-    let max_level = if crate::rules::natural_key(&cur.max_level)
-        > crate::rules::natural_key(&prev.max_level)
-    {
-        cur.max_level.clone()
+    let (max_level, max_level_idx) = if cur.max_level_idx > prev.max_level_idx {
+        (cur.max_level.clone(), cur.max_level_idx)
     } else {
-        prev.max_level.clone()
+        (prev.max_level.clone(), prev.max_level_idx)
     };
     SessionReport {
         ended_unix: cur.ended_unix,
         date_label: cur.date_label.clone(),
         day_key: cur.day_key.clone(),
+        table_id: prev.table_id,
+        max_level_idx,
+        stem: prev.stem.clone(),
         table: prev.table.clone(),
         start_level: prev.start_level.clone(),
         final_level: cur.final_level.clone(),
@@ -405,18 +426,46 @@ pub fn merge_reports(prev: &SessionReport, cur: &SessionReport) -> SessionReport
     }
 }
 
-/// セッション結果を同日分へマージし、状態保存＋HTML生成まで行う
+/// セッション結果を同日分へマージし、状態保存＋HTML生成まで行う。
+/// 日次状態は (論理日付, 表ID) ごとに分けて保持する (別の表を混ぜない)
 pub fn merge_and_generate(cur: &SessionReport) -> Option<PathBuf> {
-    let combined = match std::fs::read_to_string(day_state_path())
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(t.trim_start_matches('\u{feff}')).ok())
-        .and_then(|v| report_from_json(&v))
-    {
-        Some(prev) if prev.day_key == cur.day_key => merge_reports(&prev, cur),
-        _ => cur.clone(),
+    // 既存の状態を読む。新形式 {"reports": {key: report}} と
+    // 旧形式 (単一レポート) の両方に対応する
+    let mut reports: serde_json::Map<String, Value> = Default::default();
+    if let Ok(t) = std::fs::read_to_string(day_state_path()) {
+        if let Ok(v) = serde_json::from_str::<Value>(t.trim_start_matches('\u{feff}')) {
+            if let Some(m) = v.get("reports").and_then(|x| x.as_object()) {
+                reports = m.clone();
+            } else if let Some(prev) = report_from_json(&v) {
+                let k = format!("{}:{}", prev.day_key, prev.table_id);
+                reports.insert(k, report_to_json(&prev));
+            }
+        }
+    }
+    let mut cur = cur.clone();
+    if cur.stem.is_empty() {
+        // その日の最初の表は result-YYYYMMDD.html、2つ目以降は表IDを付ける
+        let prefix = format!("{}:", cur.day_key);
+        let has_other = reports.keys().any(|k| k.starts_with(&prefix));
+        cur.stem = if has_other {
+            format!("{}-t{}", cur.day_key, cur.table_id)
+        } else {
+            cur.day_key.clone()
+        };
+    }
+    let key = format!("{}:{}", cur.day_key, cur.table_id);
+    let combined = match reports.get(&key).and_then(report_from_json) {
+        Some(prev) => merge_reports(&prev, &cur),
+        None => cur,
     };
-    let text = serde_json::to_string_pretty(&report_to_json(&combined)).unwrap_or_default();
-    let _ = std::fs::write(day_state_path(), text);
+    reports.insert(key, report_to_json(&combined));
+    let state = serde_json::json!({ "reports": reports });
+    let text = serde_json::to_string_pretty(&state).unwrap_or_default();
+    let path = day_state_path();
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
     generate(&combined)
 }
 
@@ -456,6 +505,9 @@ mod tests {
             ended_unix: 0.0, // 1970-01-01 09:00 JST
             date_label: "1970/01/01".into(),
             day_key: "19700101".into(),
+            table_id: 1,
+            max_level_idx: 9,
+            stem: String::new(),
             table: "発狂BMS難度表".into(),
             start_level: "★7".into(),
             final_level: "★9".into(),
@@ -514,10 +566,12 @@ mod tests {
         a.start_level = "★7".into();
         a.final_level = "★8".into();
         a.max_level = "★8".into();
+        a.max_level_idx = 8;
         let mut b = sample();
         b.start_level = "★8".into();
         b.final_level = "★7".into();
         b.max_level = "★10".into();
+        b.max_level_idx = 10;
         b.songs = vec![SongRow {
             level: "★8".into(),
             title: "T".into(),

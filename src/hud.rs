@@ -85,11 +85,23 @@ mod win {
         show_countdown: bool,
     }
 
+    impl Drop for Renderer {
+        fn drop(&mut self) {
+            // CreateFontW で作ったフォントは明示的に解放する (GDIリーク防止)
+            for f in self.fonts.values() {
+                unsafe {
+                    let _ = DeleteObject(HGDIOBJ(f.mid.0));
+                    let _ = DeleteObject(HGDIOBJ(f.legend.0));
+                }
+            }
+        }
+    }
+
     /// ポイント/連敗のバーを作る。マスが多い設定 (連敗99等) では
 /// マスを全部描くと画面幅いっぱいに伸びてしまうので数値表記にする
 fn seg_bar(filled: i64, total: i64) -> String {
     if total > 12 {
-        format!("{filled}/{total}")
+        format!("{}/{}", filled.clamp(0, total), total)
     } else {
         "■".repeat(filled.max(0) as usize) + &"□".repeat((total - filled).max(0) as usize)
     }
@@ -461,6 +473,13 @@ impl Renderer {
         }
         let st = read_status();
         if let Some(st) = &st {
+            if st.get("state").and_then(|v| v.as_str()) != Some("ended") {
+                STATE.with(|s| {
+                    if let Some(h) = s.borrow_mut().as_mut() {
+                        h.ended_at = None;
+                    }
+                });
+            }
             if st.get("state").and_then(|v| v.as_str()) == Some("ended") {
                 let mut close = false;
                 STATE.with(|s| {
@@ -521,10 +540,17 @@ impl Renderer {
                     return;
                 }
                 // 背景: 黒 + bg_alpha で初期化
-                let pixels = std::slice::from_raw_parts_mut(
-                    ptr as *mut u8,
-                    (w * hh * 4) as usize,
-                );
+                // 寸法は hud_geometry で検証済みだが、スライス化の前にも守る
+                let Some(byte_len) = (w as i64)
+                    .checked_mul(hh as i64)
+                    .and_then(|v| v.checked_mul(4))
+                    .and_then(|v| usize::try_from(v).ok())
+                else {
+                    let _ = DeleteDC(mem_dc);
+                    ReleaseDC(None, screen_dc);
+                    return;
+                };
+                let pixels = std::slice::from_raw_parts_mut(ptr as *mut u8, byte_len);
                 for px in pixels.chunks_exact_mut(4) {
                     px[0] = 0;
                     px[1] = 0;
@@ -577,6 +603,7 @@ impl Renderer {
     ) -> LRESULT {
         const WM_TIMER: u32 = 0x0113;
         const WM_DESTROY: u32 = 0x0002;
+        const WM_CAPTURECHANGED: u32 = 0x0215;
         const WM_LBUTTONDOWN: u32 = 0x0201;
         const WM_MOUSEMOVE: u32 = 0x0200;
         const WM_LBUTTONUP: u32 = 0x0202;
@@ -586,6 +613,14 @@ impl Renderer {
                 if update(hwnd) {
                     let _ = DestroyWindow(hwnd);
                 }
+                LRESULT(0)
+            }
+            WM_CAPTURECHANGED => {
+                STATE.with(|s| {
+                    if let Some(h) = s.borrow_mut().as_mut() {
+                        h.drag_offset = None;
+                    }
+                });
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
@@ -672,6 +707,18 @@ impl Renderer {
             .unwrap_or(Value::Null)
     }
 
+    /// セッション中の実効設定。本体が sparta-session.json に渡したものを優先し、
+    /// 無ければ通常の sparta.json を読む
+    fn load_session_cfg() -> Value {
+        let p = crate::config::session_cfg_path();
+        if let Ok(t) = std::fs::read_to_string(&p) {
+            if let Ok(v) = serde_json::from_str(t.trim_start_matches('\u{feff}')) {
+                return v;
+            }
+        }
+        crate::config::load_config()
+    }
+
     fn load_preview_cfg() -> Value {
         std::fs::read_to_string(super::preview_cfg_path())
             .ok()
@@ -691,6 +738,9 @@ impl Renderer {
         if let Some(cw) = crate::config::cfg_i64(cfg, "hud_width") {
             w = (cw as i32).clamp(240, 1200);
         }
+        // hud-pos.json の寸法は信用しない (負数だと DIB のスライス計算が壊れる)
+        let w = w.clamp(80, 4000);
+        let h = h.clamp(50, 4000);
         let bg_alpha = crate::config::cfg_i64(cfg, "hud_bg_alpha")
             .unwrap_or(BG_ALPHA as i64)
             .clamp(0, 255) as u8;
@@ -739,7 +789,7 @@ impl Renderer {
         let cfg = if preview {
             load_preview_cfg()
         } else {
-            crate::config::load_config()
+            load_session_cfg()
         };
         let (x, y, w, h, bg_alpha) = hud_geometry(&cfg, &saved);
         let mut renderer = Renderer::new(w, h);
@@ -799,7 +849,11 @@ impl Renderer {
             SetTimer(hwnd, 1, 500, None);
             update(hwnd);
             let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            loop {
+                let r = GetMessageW(&mut msg, None, 0, 0);
+                if r.0 <= 0 {
+                    break; // 0 = WM_QUIT / -1 = エラー
+                }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }

@@ -36,9 +36,21 @@ pub fn load_config() -> Value {
     Value::Object(Map::new())
 }
 
-pub fn save_config(cfg: &Value) {
+/// 設定を保存する。一時ファイルへ書いてから置換するので、
+/// 途中終了でファイルが壊れることはない。成功したら true
+pub fn save_config(cfg: &Value) -> bool {
     let text = serde_json::to_string_pretty(cfg).unwrap_or_default();
-    let _ = std::fs::write(config_path(), text);
+    let path = config_path();
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_err() {
+        return false;
+    }
+    std::fs::rename(&tmp, &path).is_ok()
+}
+
+/// セッション実行中の実効設定を HUD へ渡すためのファイル
+pub fn session_cfg_path() -> PathBuf {
+    base_dir().join("sparta-session.json")
 }
 
 pub fn cfg_str(cfg: &Value, key: &str) -> Option<String> {
@@ -116,15 +128,25 @@ fn home_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
 }
 
-/// score.db の場所を決める。プロファイル別があればそちらを優先
-pub fn find_score_db(bmz_dir: &Path, cfg: &Value) -> Option<PathBuf> {
-    let mut cands: Vec<PathBuf> = Vec::new();
+/// score.db の場所を決める。
+/// profile が指定されていればそのプロファイルだけを見る (別人のDBへ
+/// フォールバックしない)。未指定でプロファイルが複数ある場合は
+/// 曖昧なのでエラーにし、指定を促す
+pub fn find_score_db(bmz_dir: &Path, cfg: &Value) -> Result<PathBuf, String> {
     let profiles_dir = bmz_dir.join("data").join("profiles");
     if let Some(prof) = cfg_str(cfg, "profile") {
-        cands.push(profiles_dir.join(prof).join("score.db"));
+        let p = profiles_dir.join(&prof).join("score.db");
+        return if p.exists() {
+            Ok(p)
+        } else {
+            Err(format!(
+                "指定されたプロファイル {prof} の score.db が見つかりません: {}",
+                p.display()
+            ))
+        };
     }
+    let mut subs: Vec<PathBuf> = Vec::new();
     if profiles_dir.exists() {
-        let mut subs: Vec<PathBuf> = Vec::new();
         if let Ok(rd) = std::fs::read_dir(&profiles_dir) {
             for e in rd.flatten() {
                 let p = e.path().join("score.db");
@@ -134,8 +156,30 @@ pub fn find_score_db(bmz_dir: &Path, cfg: &Value) -> Option<PathBuf> {
             }
         }
         subs.sort();
-        cands.extend(subs);
     }
-    cands.push(bmz_dir.join("data").join("score.db"));
-    cands.into_iter().find(|p| p.exists())
+    match subs.len() {
+        1 => Ok(subs.into_iter().next().unwrap()),
+        0 => {
+            let p = bmz_dir.join("data").join("score.db");
+            if p.exists() {
+                Ok(p)
+            } else {
+                Err("score.db が見つかりませんでした。".to_string())
+            }
+        }
+        _ => {
+            let names: Vec<String> = subs
+                .iter()
+                .filter_map(|p| {
+                    p.parent()
+                        .and_then(|d| d.file_name())
+                        .map(|n| n.to_string_lossy().into_owned())
+                })
+                .collect();
+            Err(format!(
+                "プロファイルが複数あります ({} )。sparta.json の profile で使うプロファイルを指定してください。",
+                names.join(", ")
+            ))
+        }
+    }
 }
