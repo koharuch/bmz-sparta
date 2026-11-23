@@ -17,7 +17,7 @@ and it launches charts one by one, moving you up or down levels by your results.
   - CLEAR / EASY CLEAR = 1点
   - FAIL で点数はリセット
 - 3連続 FAIL でレベルDOWN
-- ゲージ等のプレイ設定は bmz-player のプロファイル設定のまま使います
+- ゲージと GAS は設定画面や CLI で指定できます
   (判定はランプの強さで行うため、使うゲージで難易度が変わります)
 - セッション上限 (分) で自動終了。Ctrl+C でも終了できます
 - プレイ中は HUD オーバーレイに現在のレベル・点数・残り時間・自己ベストを表示します
@@ -30,13 +30,25 @@ and it launches charts one by one, moving you up or down levels by your results.
    - 設定ウィンドウが開きます。難易度表・開始レベル・セッション時間などを
      選んで「開始」を押してください
      (設定は exe と同じフォルダの `sparta.json` に保存されます)
-   - bmz-player は一般的なインストール場所から自動検出します
+   - bmz-player は標準インストール先 (%LOCALAPPDATA%\Programs\BMZ Player) から自動検出します。見つからない場合は場所指定ダイアログで選べます
 3. あとは自動で選曲・起動が続きます
 4. セッションが終わると、結果レポート (HTML) が自動で開きます。
    曲ごとの結果一覧と、X へポストするためのリンクが付いています。
    レポートは日単位で、同じ日のセッションは1つのファイルにマージされます
 
 初回の動作確認には `--dry-run` が使えます (DB の検出と選曲だけ表示して起動しません)。
+
+## AIエージェントに使わせる場合
+
+AIアシスタントにこのリポジトリを渡すと、`AGENTS.md` の手順に沿って
+セットアップとセッション開始まで代行できます。
+エージェント向けの完全CLI起動もあります:
+
+```
+bmz-sparta.exe run --table 1 --level 7 --minutes 15
+```
+
+(GUI・対話なしで即開始。未指定の項目は `sparta.json` の値が使われます)
 
 ```
 bmz-sparta.exe --dry-run
