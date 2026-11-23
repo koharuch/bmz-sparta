@@ -49,6 +49,7 @@ mod win {
     };
     use windows::Win32::Graphics::Gdi::*;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
     use windows::Win32::UI::WindowsAndMessaging::*;
 
     const BG_ALPHA: u8 = 26;
@@ -398,6 +399,8 @@ mod win {
         ended_at: Option<f64>,
         preview: bool,
         t0: f64,
+        drag_offset: Option<(i32, i32)>,
+        drag_anchor: Option<String>,
     }
 
     thread_local! {
@@ -417,7 +420,27 @@ mod win {
             let cfg = load_preview_cfg();
             STATE.with(|s| {
                 if let Some(h) = s.borrow_mut().as_mut() {
-                    let (nx, ny, nw, nh, na) = hud_geometry(&cfg, &load_saved_pos());
+                    if h.drag_offset.is_some() {
+                        // ドラッグ中は再配置しない
+                        apply_flags(&mut h.renderer, &cfg);
+                        return;
+                    }
+                    // ドラッグした後は、設定GUIがアンカーを「カスタム」に
+                    // 切り替えるまで、ドラッグ時点のアンカーを custom 扱いにして
+                    // 位置がプリセットに吸着しないようにする
+                    let mut eff = cfg.clone();
+                    if let Some(da) = h.drag_anchor.clone() {
+                        let cur = crate::config::cfg_str(&cfg, "hud_anchor")
+                            .unwrap_or_else(|| "custom".to_string());
+                        if cur == da {
+                            if let Some(obj) = eff.as_object_mut() {
+                                obj.insert("hud_anchor".into(), serde_json::json!("custom"));
+                            }
+                        } else {
+                            h.drag_anchor = None;
+                        }
+                    }
+                    let (nx, ny, nw, nh, na) = hud_geometry(&eff, &load_saved_pos());
                     if (nx, ny, nw, nh) != (h.x, h.y, h.w, h.h) {
                         h.x = nx;
                         h.y = ny;
@@ -562,12 +585,90 @@ mod win {
     ) -> LRESULT {
         const WM_TIMER: u32 = 0x0113;
         const WM_DESTROY: u32 = 0x0002;
+        const WM_LBUTTONDOWN: u32 = 0x0201;
+        const WM_MOUSEMOVE: u32 = 0x0200;
+        const WM_LBUTTONUP: u32 = 0x0202;
+        const WM_KEYDOWN: u32 = 0x0100;
         match msg {
             WM_TIMER => {
                 if update(hwnd) {
                     let _ = DestroyWindow(hwnd);
                 }
                 LRESULT(0)
+            }
+            WM_LBUTTONDOWN => {
+                STATE.with(|s| {
+                    if let Some(h) = s.borrow_mut().as_mut() {
+                        if h.preview {
+                            let mut pt = POINT::default();
+                            if GetCursorPos(&mut pt).is_ok() {
+                                h.drag_offset = Some((pt.x - h.x, pt.y - h.y));
+                                if h.drag_anchor.is_none() {
+                                    let cfg = load_preview_cfg();
+                                    h.drag_anchor =
+                                        crate::config::cfg_str(&cfg, "hud_anchor");
+                                }
+                                let _ = SetCapture(hwnd);
+                            }
+                        }
+                    }
+                });
+                LRESULT(0)
+            }
+            WM_MOUSEMOVE => {
+                STATE.with(|s| {
+                    if let Some(h) = s.borrow_mut().as_mut() {
+                        if let Some((ox, oy)) = h.drag_offset {
+                            let mut pt = POINT::default();
+                            if GetCursorPos(&mut pt).is_ok() {
+                                h.x = pt.x - ox;
+                                h.y = pt.y - oy;
+                                let _ = SetWindowPos(
+                                    hwnd,
+                                    None,
+                                    h.x,
+                                    h.y,
+                                    0,
+                                    0,
+                                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                                );
+                            }
+                        }
+                    }
+                });
+                LRESULT(0)
+            }
+            WM_LBUTTONUP => {
+                let mut save = None;
+                STATE.with(|s| {
+                    if let Some(h) = s.borrow_mut().as_mut() {
+                        if h.drag_offset.take().is_some() {
+                            save = Some((h.x, h.y, h.w, h.h));
+                        }
+                    }
+                });
+                if let Some((x, y, w, hgt)) = save {
+                    let _ = ReleaseCapture();
+                    // ドラッグした位置を記憶する (アンカー=カスタムで使われる)
+                    let v = serde_json::json!({"x": x, "y": y, "w": w, "h": hgt});
+                    let _ = std::fs::write(crate::config::hud_pos_path(), v.to_string());
+                }
+                LRESULT(0)
+            }
+            WM_KEYDOWN => {
+                let is_preview = STATE.with(|s| {
+                    s.borrow()
+                        .as_ref()
+                        .map(|h| h.preview)
+                        .unwrap_or(false)
+                });
+                if is_preview && wp.0 == 0x1B {
+                    // Esc: プレビューを閉じる (設定GUI側が後片付けする)
+                    let _ = DestroyWindow(hwnd);
+                    LRESULT(0)
+                } else {
+                    DefWindowProcW(hwnd, msg, wp, lp)
+                }
             }
             WM_DESTROY => {
                 PostQuitMessage(0);
@@ -694,6 +795,8 @@ mod win {
                 ended_at: None,
                 preview,
                 t0: now_secs(),
+                drag_offset: None,
+                drag_anchor: None,
             });
         });
         unsafe {
@@ -709,11 +812,12 @@ mod win {
                 ..Default::default()
             };
             RegisterClassExW(&wc);
-            let ex = WS_EX_LAYERED
-                | WS_EX_TOPMOST
-                | WS_EX_TOOLWINDOW
-                | WS_EX_TRANSPARENT
-                | WS_EX_NOACTIVATE;
+            let mut ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
+            if !preview {
+                // 通常時はクリック透過 (ゲームの入力を邪魔しない)。
+                // プレビュー時はドラッグと Esc を受け付けるため透過しない
+                ex |= WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
+            }
             let hwnd = CreateWindowExW(
                 ex,
                 class_name,

@@ -169,6 +169,7 @@ mod win {
         preview: Option<std::process::Child>,
         bmz_child: Option<std::process::Child>,
         preview_written: String,
+        pos_seen: String,
         page_main: Vec<HWND>,
         page_report: Vec<HWND>,
         page_hud: Vec<HWND>,
@@ -512,7 +513,7 @@ mod win {
                 "この曲のベスト・結果を表示",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                238,
+                230,
                 248,
                 22,
                 ID_HUD_BEST,
@@ -524,7 +525,7 @@ mod win {
                 "ルール凡例を表示",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                264,
+                254,
                 248,
                 22,
                 ID_HUD_LEGEND,
@@ -536,7 +537,7 @@ mod win {
                 "残り時間を表示",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                290,
+                278,
                 248,
                 22,
                 ID_HUD_REMAIN,
@@ -548,7 +549,7 @@ mod win {
                 "次の曲までのカウントダウンを表示",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                316,
+                302,
                 248,
                 22,
                 ID_HUD_COUNTDOWN,
@@ -560,7 +561,7 @@ mod win {
                 "プレビュー表示",
                 BS_PUSHBUTTON as u32,
                 196,
-                348,
+                332,
                 248,
                 30,
                 ID_PREVIEW,
@@ -569,12 +570,12 @@ mod win {
             st.h_note = make(
                 hwnd,
                 w!("STATIC"),
-                "自動再生でランダムな譜面が流れます（スコア保存なし）\r\nゲームが前面のときは Alt+Tab で設定画面に戻れます",
+                "自動再生でランダムな譜面が流れます（スコア保存なし）\r\nHUD はドラッグで移動でき、位置は記憶されます\r\n終了は「プレビュー終了」ボタン、または HUD で Esc",
                 0,
                 24,
-                384,
+                368,
                 424,
-                36,
+                54,
                 0,
                 font,
             );
@@ -966,6 +967,8 @@ mod win {
             {
                 st.preview = Some(child);
                 set_text(st.h_preview, "プレビュー終了");
+                st.pos_seen = std::fs::read_to_string(crate::config::hud_pos_path())
+                    .unwrap_or_default();
                 SetTimer(hwnd, PREVIEW_TIMER_ID, 400, None);
                 st.bmz_child = launch_viewer(st);
             }
@@ -1223,21 +1226,52 @@ mod win {
                 LRESULT(GetStockObject(WHITE_BRUSH).0 as isize)
             }
             WM_TIMER => {
+                let mut stop = false;
                 STATE.with(|s| {
                     if let Some(st) = s.borrow_mut().as_mut() {
                         if st.preview.is_some() {
-                            unsafe { write_preview(st, false) };
-                            // Viewer が曲を終えて終了していたら次のランダム譜面を流す
-                            let ended = match st.bmz_child.as_mut() {
+                            // HUD が Esc で閉じられたらプレビュー全体を終了する
+                            let hud_gone = match st.preview.as_mut() {
                                 Some(c) => matches!(c.try_wait(), Ok(Some(_))),
                                 None => false,
                             };
-                            if ended {
-                                st.bmz_child = launch_viewer(st);
+                            if hud_gone {
+                                stop = true;
+                            } else {
+                                unsafe { write_preview(st, false) };
+                                // HUD のドラッグで位置ファイルが変わったら、
+                                // アンカーを「カスタム」に切り替える
+                                let pos_text =
+                                    std::fs::read_to_string(crate::config::hud_pos_path())
+                                        .unwrap_or_default();
+                                if pos_text != st.pos_seen {
+                                    st.pos_seen = pos_text;
+                                    let _ = SendMessageW(
+                                        st.h_anchor,
+                                        CB_SETCURSEL,
+                                        WPARAM(0),
+                                        LPARAM(0),
+                                    );
+                                }
+                                // Viewer が曲を終えて終了していたら次のランダム譜面を流す
+                                let ended = match st.bmz_child.as_mut() {
+                                    Some(c) => matches!(c.try_wait(), Ok(Some(_))),
+                                    None => false,
+                                };
+                                if ended {
+                                    st.bmz_child = launch_viewer(st);
+                                }
                             }
                         }
                     }
                 });
+                if stop {
+                    STATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            unsafe { stop_preview(hwnd, st) };
+                        }
+                    });
+                }
                 LRESULT(0)
             }
             WM_NOTIFY => {
@@ -1317,6 +1351,7 @@ mod win {
                 preview: None,
                 bmz_child: None,
                 preview_written: String::new(),
+                pos_seen: String::new(),
                 page_main: Vec::new(),
                 page_report: Vec::new(),
                 page_hud: Vec::new(),
