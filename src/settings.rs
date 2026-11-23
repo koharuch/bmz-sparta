@@ -63,7 +63,10 @@ mod win {
     const ID_DAY_START: i32 = 110;
     const ID_TAB: i32 = 111;
     const ID_BROWSE: i32 = 112;
-    const ID_HUD_ANCHOR: i32 = 113;
+    const ID_PRESET: i32 = 113;
+    const ID_PRESET_NAME: i32 = 127;
+    const ID_PRESET_ADD: i32 = 128;
+    const ID_PRESET_DEL: i32 = 129;
     const ID_HUD_WIDTH: i32 = 114;
     const ID_HUD_ALPHA: i32 = 115;
     const ID_HUD_BEST: i32 = 116;
@@ -126,14 +129,61 @@ mod win {
         ("random", "ランダム"),
     ];
 
-    /// HUD の表示位置プリセット (sparta.json の hud_anchor 値, 表示名)
-    const HUD_ANCHORS: [(&str, &str); 5] = [
-        ("custom", "カスタム (hud-pos.json)"),
-        ("tl", "左上"),
-        ("tr", "右上"),
-        ("bl", "左下"),
-        ("br", "右下"),
-    ];
+    /// 位置プリセットを sparta.json の hud_presets から読む
+    fn presets_from_cfg(cfg: &Value) -> Vec<(String, i32, i32)> {
+        cfg.get("hud_presets")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| {
+                        let name = p.get("name")?.as_str()?.to_string();
+                        let x = p.get("x")?.as_i64()? as i32;
+                        let y = p.get("y")?.as_i64()? as i32;
+                        Some((name, x, y))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// hud-pos.json の現在位置 (x, y)
+    fn current_pos() -> (i32, i32) {
+        let saved: Value = std::fs::read_to_string(crate::config::hud_pos_path())
+            .ok()
+            .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
+            .unwrap_or(Value::Null);
+        (
+            saved.get("x").and_then(|v| v.as_i64()).unwrap_or(1180) as i32,
+            saved.get("y").and_then(|v| v.as_i64()).unwrap_or(310) as i32,
+        )
+    }
+
+    /// プリセット位置を hud-pos.json へ適用する (w/h は維持)
+    fn apply_preset_pos(x: i32, y: i32) {
+        let path = crate::config::hud_pos_path();
+        let mut saved: Value = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
+            .unwrap_or(Value::Null);
+        if !saved.is_object() {
+            saved = json!({"x": 1180, "y": 310, "w": 460, "h": 400});
+        }
+        if let Some(obj) = saved.as_object_mut() {
+            obj.insert("x".into(), json!(x));
+            obj.insert("y".into(), json!(y));
+        }
+        let _ = std::fs::write(path, saved.to_string());
+    }
+
+    unsafe fn refresh_presets(st: &mut State, select: Option<usize>) {
+        send(st.h_preset, CB_RESETCONTENT, 0, 0);
+        for (name, _, _) in &st.presets {
+            combo_add(st.h_preset, name);
+        }
+        if let Some(i) = select {
+            send(st.h_preset, CB_SETCURSEL, i, 0);
+        }
+    }
 
     struct State {
         cfg: Value,
@@ -152,7 +202,9 @@ mod win {
         h_report: HWND,
         h_tab: HWND,
         h_bmz_label: HWND,
-        h_anchor: HWND,
+        h_preset: HWND,
+        h_preset_name: HWND,
+        presets: Vec<(String, i32, i32)>,
         h_hud_w: HWND,
         h_hud_alpha: HWND,
         h_best: HWND,
@@ -169,7 +221,6 @@ mod win {
         preview: Option<std::process::Child>,
         bmz_child: Option<std::process::Child>,
         preview_written: String,
-        pos_seen: String,
         page_main: Vec<HWND>,
         page_report: Vec<HWND>,
         page_hud: Vec<HWND>,
@@ -272,6 +323,23 @@ mod win {
     unsafe fn create_controls(hwnd: HWND) {
         let font = CreateFontW(
             -15,
+            0,
+            0,
+            0,
+            400,
+            0,
+            0,
+            0,
+            1, // DEFAULT_CHARSET
+            0,
+            0,
+            4, // ANTIALIASED_QUALITY
+            0,
+            w!("Yu Gothic UI"),
+        );
+        // 注意書き用の小さめフォント
+        let note_font = CreateFontW(
+            -12,
             0,
             0,
             0,
@@ -468,40 +536,79 @@ mod win {
                 font,
             );
             // ---- HUDタブ ----
-            label(&mut st.page_hud, 12, 124, 176, "表示位置");
-            st.h_anchor = make(
+            label(&mut st.page_hud, 12, 116, 176, "位置プリセット");
+            st.h_preset = make(
                 hwnd,
                 w!("COMBOBOX"),
                 "",
                 CBS_DROPDOWNLIST as u32,
                 196,
-                124,
+                116,
                 248,
                 200,
-                ID_HUD_ANCHOR,
+                ID_PRESET,
                 font,
             );
-            label(&mut st.page_hud, 12, 162, 176, "幅 (px)");
+            label(&mut st.page_hud, 12, 148, 176, "現在の位置を登録");
+            st.h_preset_name = make(
+                hwnd,
+                w!("EDIT"),
+                "",
+                WS_BORDER.0 | (ES_AUTOHSCROLL as u32),
+                196,
+                148,
+                140,
+                22,
+                ID_PRESET_NAME,
+                font,
+            );
+            let b_add = make(
+                hwnd,
+                w!("BUTTON"),
+                "登録",
+                BS_PUSHBUTTON as u32,
+                344,
+                148,
+                48,
+                22,
+                ID_PRESET_ADD,
+                font,
+            );
+            st.page_hud.push(b_add);
+            let b_del = make(
+                hwnd,
+                w!("BUTTON"),
+                "削除",
+                BS_PUSHBUTTON as u32,
+                396,
+                148,
+                48,
+                22,
+                ID_PRESET_DEL,
+                font,
+            );
+            st.page_hud.push(b_del);
+            label(&mut st.page_hud, 12, 180, 176, "幅 (px)");
             st.h_hud_w = make(
                 hwnd,
                 w!("EDIT"),
                 "",
                 WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
                 196,
-                162,
+                180,
                 90,
                 24,
                 ID_HUD_WIDTH,
                 font,
             );
-            label(&mut st.page_hud, 12, 200, 176, "背景の濃さ (0-255)");
+            label(&mut st.page_hud, 12, 210, 176, "背景の濃さ (0-255)");
             st.h_hud_alpha = make(
                 hwnd,
                 w!("EDIT"),
                 "",
                 WS_BORDER.0 | (ES_AUTOHSCROLL as u32) | (ES_NUMBER as u32),
                 196,
-                200,
+                210,
                 90,
                 24,
                 ID_HUD_ALPHA,
@@ -513,7 +620,7 @@ mod win {
                 "この曲のベスト・結果を表示",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                230,
+                240,
                 248,
                 22,
                 ID_HUD_BEST,
@@ -525,7 +632,7 @@ mod win {
                 "ルール凡例を表示",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                254,
+                264,
                 248,
                 22,
                 ID_HUD_LEGEND,
@@ -537,7 +644,7 @@ mod win {
                 "残り時間を表示",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                278,
+                288,
                 248,
                 22,
                 ID_HUD_REMAIN,
@@ -549,7 +656,7 @@ mod win {
                 "次の曲までのカウントダウンを表示",
                 BS_AUTOCHECKBOX as u32,
                 196,
-                302,
+                312,
                 248,
                 22,
                 ID_HUD_COUNTDOWN,
@@ -561,9 +668,9 @@ mod win {
                 "プレビュー表示",
                 BS_PUSHBUTTON as u32,
                 196,
-                332,
+                342,
                 248,
-                30,
+                28,
                 ID_PREVIEW,
                 font,
             );
@@ -573,11 +680,11 @@ mod win {
                 "自動再生でランダムな譜面が流れます（スコア保存なし）\r\nHUD はドラッグで移動でき、位置は記憶されます\r\n終了は「プレビュー終了」ボタン、または HUD で Esc",
                 0,
                 24,
-                368,
+                376,
                 424,
-                54,
+                46,
                 0,
-                font,
+                note_font,
             );
             // ---- 詳細タブ (レベル昇降ルール) ----
             label(&mut st.page_adv, 12, 84, 176, "レベルアップに必要な pt");
@@ -694,16 +801,12 @@ mod win {
                 st.h_day_start,
                 &cfg_i64(&st.cfg, "day_start_hour").unwrap_or(0).to_string(),
             );
-            for (_, name) in HUD_ANCHORS {
-                combo_add(st.h_anchor, name);
+            refresh_presets(st, None);
+            // 現在位置と一致するプリセットがあれば選択状態にする
+            let pos = current_pos();
+            if let Some(i) = st.presets.iter().position(|(_, x, y)| (*x, *y) == pos) {
+                send(st.h_preset, CB_SETCURSEL, i, 0);
             }
-            let cur_anchor =
-                cfg_str(&st.cfg, "hud_anchor").unwrap_or_else(|| "custom".into());
-            let a_idx = HUD_ANCHORS
-                .iter()
-                .position(|(k, _)| *k == cur_anchor)
-                .unwrap_or(0);
-            send(st.h_anchor, CB_SETCURSEL, a_idx, 0);
             set_text(
                 st.h_hud_w,
                 &cfg_i64(&st.cfg, "hud_width").unwrap_or(460).to_string(),
@@ -779,7 +882,8 @@ mod win {
             st.page_report.extend([st.h_report, st.h_day_start]);
             st.page_hud.extend([
                 st.h_hud,
-                st.h_anchor,
+                st.h_preset,
+                st.h_preset_name,
                 st.h_hud_w,
                 st.h_hud_alpha,
                 st.h_best,
@@ -967,8 +1071,6 @@ mod win {
             {
                 st.preview = Some(child);
                 set_text(st.h_preview, "プレビュー終了");
-                st.pos_seen = std::fs::read_to_string(crate::config::hud_pos_path())
-                    .unwrap_or_default();
                 SetTimer(hwnd, PREVIEW_TIMER_ID, 400, None);
                 st.bmz_child = launch_viewer(st);
             }
@@ -1089,9 +1191,15 @@ mod win {
         cfg_set(&mut st.cfg, "result_seconds", json!(rs.max(0)));
         let dsh: i64 = get_text(st.h_day_start).trim().parse().unwrap_or(0);
         cfg_set(&mut st.cfg, "day_start_hour", json!(dsh.clamp(0, 23)));
-        let a_sel = combo_sel(st.h_anchor);
-        if a_sel >= 0 && (a_sel as usize) < HUD_ANCHORS.len() {
-            cfg_set(&mut st.cfg, "hud_anchor", json!(HUD_ANCHORS[a_sel as usize].0));
+        // 位置プリセット (旧アンカー方式は廃止。位置そのものは hud-pos.json が正)
+        let presets: Vec<Value> = st
+            .presets
+            .iter()
+            .map(|(name, x, y)| json!({"name": name, "x": x, "y": y}))
+            .collect();
+        cfg_set(&mut st.cfg, "hud_presets", Value::Array(presets));
+        if let Some(obj) = st.cfg.as_object_mut() {
+            obj.remove("hud_anchor");
         }
         let hw: i64 = get_text(st.h_hud_w).trim().parse().unwrap_or(460);
         cfg_set(&mut st.cfg, "hud_width", json!(hw.clamp(240, 1200)));
@@ -1163,6 +1271,54 @@ mod win {
                     STATE.with(|s| {
                         if let Some(st) = s.borrow_mut().as_mut() {
                             unsafe { browse_bmz_dir(hwnd, st) };
+                        }
+                    });
+                    LRESULT(0)
+                } else if id == ID_PRESET && code == CBN_SELCHANGE as usize {
+                    STATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            let sel = combo_sel(st.h_preset);
+                            if sel >= 0 && (sel as usize) < st.presets.len() {
+                                let (_, x, y) = st.presets[sel as usize];
+                                apply_preset_pos(x, y);
+                            }
+                        }
+                    });
+                    LRESULT(0)
+                } else if id == ID_PRESET_ADD {
+                    STATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            let name = get_text(st.h_preset_name).trim().to_string();
+                            if name.is_empty() {
+                                unsafe {
+                                    message_box(hwnd, "プリセット名を入力してください。", "位置プリセット")
+                                };
+                            } else {
+                                let (x, y) = current_pos();
+                                let idx = match st.presets.iter().position(|(n, _, _)| *n == name) {
+                                    Some(i) => {
+                                        st.presets[i] = (name, x, y);
+                                        i
+                                    }
+                                    None => {
+                                        st.presets.push((name, x, y));
+                                        st.presets.len() - 1
+                                    }
+                                };
+                                unsafe { refresh_presets(st, Some(idx)) };
+                                set_text(st.h_preset_name, "");
+                            }
+                        }
+                    });
+                    LRESULT(0)
+                } else if id == ID_PRESET_DEL {
+                    STATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            let sel = combo_sel(st.h_preset);
+                            if sel >= 0 && (sel as usize) < st.presets.len() {
+                                st.presets.remove(sel as usize);
+                                unsafe { refresh_presets(st, None) };
+                            }
                         }
                     });
                     LRESULT(0)
@@ -1239,20 +1395,6 @@ mod win {
                                 stop = true;
                             } else {
                                 unsafe { write_preview(st, false) };
-                                // HUD のドラッグで位置ファイルが変わったら、
-                                // アンカーを「カスタム」に切り替える
-                                let pos_text =
-                                    std::fs::read_to_string(crate::config::hud_pos_path())
-                                        .unwrap_or_default();
-                                if pos_text != st.pos_seen {
-                                    st.pos_seen = pos_text;
-                                    let _ = SendMessageW(
-                                        st.h_anchor,
-                                        CB_SETCURSEL,
-                                        WPARAM(0),
-                                        LPARAM(0),
-                                    );
-                                }
                                 // Viewer が曲を終えて終了していたら次のランダム譜面を流す
                                 let ended = match st.bmz_child.as_mut() {
                                     Some(c) => matches!(c.try_wait(), Ok(Some(_))),
@@ -1288,15 +1430,28 @@ mod win {
                 LRESULT(0)
             }
             WM_CLOSE => {
-                STATE.with(|s| {
-                    if let Some(st) = s.borrow_mut().as_mut() {
-                        if st.result.is_none() {
-                            st.result = Some((false, false));
-                        }
-                    }
+                // プレビュー中は × で閉じず、タスクバーへ最小化する
+                // (全画面のゲーム中でも設定画面に戻れるように)
+                let previewing = STATE.with(|s| {
+                    s.borrow()
+                        .as_ref()
+                        .map(|st| st.preview.is_some())
+                        .unwrap_or(false)
                 });
-                let _ = DestroyWindow(hwnd);
-                LRESULT(0)
+                if previewing {
+                    let _ = ShowWindow(hwnd, SW_MINIMIZE);
+                    LRESULT(0)
+                } else {
+                    STATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            if st.result.is_none() {
+                                st.result = Some((false, false));
+                            }
+                        }
+                    });
+                    let _ = DestroyWindow(hwnd);
+                    LRESULT(0)
+                }
             }
             WM_DESTROY => {
                 PostQuitMessage(0);
@@ -1334,7 +1489,9 @@ mod win {
                 h_day_start: HWND::default(),
                 h_tab: HWND::default(),
                 h_bmz_label: HWND::default(),
-                h_anchor: HWND::default(),
+                h_preset: HWND::default(),
+                h_preset_name: HWND::default(),
+                presets: presets_from_cfg(cfg),
                 h_hud_w: HWND::default(),
                 h_hud_alpha: HWND::default(),
                 h_best: HWND::default(),
@@ -1351,7 +1508,6 @@ mod win {
                 preview: None,
                 bmz_child: None,
                 preview_written: String::new(),
-                pos_seen: String::new(),
                 page_main: Vec::new(),
                 page_report: Vec::new(),
                 page_hud: Vec::new(),
@@ -1404,6 +1560,8 @@ mod win {
                 Err(_) => return None,
             };
             let _ = ShowWindow(hwnd, SW_SHOW);
+            // 全画面のゲームの上でも設定画面に届くよう最前面にする
+            let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                 let _ = TranslateMessage(&msg);

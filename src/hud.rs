@@ -1,7 +1,7 @@
 //! スパルタ HUD: sparta-status.json を読んで最前面に状態を表示する。
 //! Win32 レイヤードウィンドウ (UpdateLayeredWindow) でピクセル単位の透過。
 //! 背景は黒の薄いアルファ (既定 26/255、sparta.json の hud_bg_alpha で変更可)。
-//! 位置は hud_anchor (四隅プリセット) または hud-pos.json の矩形 (custom)。
+//! 位置は hud-pos.json の矩形 (設定GUIの位置プリセットからも書き換わる)。
 //! 表示項目・幅・背景の濃さは sparta.json の hud_* キーで調整できる
 //! (設定GUIの「HUD」タブから変更可能)。
 //!
@@ -400,7 +400,6 @@ mod win {
         preview: bool,
         t0: f64,
         drag_offset: Option<(i32, i32)>,
-        drag_anchor: Option<String>,
     }
 
     thread_local! {
@@ -425,22 +424,7 @@ mod win {
                         apply_flags(&mut h.renderer, &cfg);
                         return;
                     }
-                    // ドラッグした後は、設定GUIがアンカーを「カスタム」に
-                    // 切り替えるまで、ドラッグ時点のアンカーを custom 扱いにして
-                    // 位置がプリセットに吸着しないようにする
-                    let mut eff = cfg.clone();
-                    if let Some(da) = h.drag_anchor.clone() {
-                        let cur = crate::config::cfg_str(&cfg, "hud_anchor")
-                            .unwrap_or_else(|| "custom".to_string());
-                        if cur == da {
-                            if let Some(obj) = eff.as_object_mut() {
-                                obj.insert("hud_anchor".into(), serde_json::json!("custom"));
-                            }
-                        } else {
-                            h.drag_anchor = None;
-                        }
-                    }
-                    let (nx, ny, nw, nh, na) = hud_geometry(&eff, &load_saved_pos());
+                    let (nx, ny, nw, nh, na) = hud_geometry(&cfg, &load_saved_pos());
                     if (nx, ny, nw, nh) != (h.x, h.y, h.w, h.h) {
                         h.x = nx;
                         h.y = ny;
@@ -603,11 +587,6 @@ mod win {
                             let mut pt = POINT::default();
                             if GetCursorPos(&mut pt).is_ok() {
                                 h.drag_offset = Some((pt.x - h.x, pt.y - h.y));
-                                if h.drag_anchor.is_none() {
-                                    let cfg = load_preview_cfg();
-                                    h.drag_anchor =
-                                        crate::config::cfg_str(&cfg, "hud_anchor");
-                                }
                                 let _ = SetCapture(hwnd);
                             }
                         }
@@ -700,40 +679,13 @@ mod win {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(d as i64) as i32
         };
-        let (mut x, mut y, mut w, h) = (gi("x", 1180), gi("y", 310), gi("w", 460), gi("h", 400));
+        let (x, y, mut w, h) = (gi("x", 1180), gi("y", 310), gi("w", 460), gi("h", 400));
         if let Some(cw) = crate::config::cfg_i64(cfg, "hud_width") {
             w = (cw as i32).clamp(240, 1200);
         }
         let bg_alpha = crate::config::cfg_i64(cfg, "hud_bg_alpha")
             .unwrap_or(BG_ALPHA as i64)
             .clamp(0, 255) as u8;
-        let anchor = crate::config::cfg_str(cfg, "hud_anchor")
-            .unwrap_or_else(|| "custom".to_string());
-        if anchor != "custom" {
-            unsafe {
-                let mut rc = RECT::default();
-                if SystemParametersInfoW(
-                    SPI_GETWORKAREA,
-                    0,
-                    Some(&mut rc as *mut RECT as *mut std::ffi::c_void),
-                    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-                )
-                .is_ok()
-                {
-                    const MARGIN: i32 = 16;
-                    x = if anchor.ends_with('l') {
-                        rc.left + MARGIN
-                    } else {
-                        rc.right - w - MARGIN
-                    };
-                    y = if anchor.starts_with('t') {
-                        rc.top + MARGIN
-                    } else {
-                        rc.bottom - h - MARGIN
-                    };
-                }
-            }
-        }
         (x, y, w, h, bg_alpha)
     }
 
@@ -796,7 +748,6 @@ mod win {
                 preview,
                 t0: now_secs(),
                 drag_offset: None,
-                drag_anchor: None,
             });
         });
         unsafe {
