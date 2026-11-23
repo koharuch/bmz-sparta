@@ -71,28 +71,19 @@ pub fn cfg_set(cfg: &mut Value, key: &str, val: Value) {
 }
 
 /// bmz-player.exe のあるフォルダを探す
-/// 自動検出の候補フォルダ (優先順)。手動指定 (cfg の bmz_dir) が先頭
+/// 自動検出の対象。bmz-player 公式インストーラ (Inno Setup) の
+/// 標準インストール先 `{localappdata}\Programs\BMZ Player` のみ。
+/// それ以外に置いた人は手動指定 (cfg の bmz_dir) を使う前提
 pub fn bmz_candidates(cfg: &Value) -> Vec<PathBuf> {
     let mut cands: Vec<PathBuf> = Vec::new();
     if let Some(d) = cfg_str(cfg, "bmz_dir") {
         cands.push(PathBuf::from(d));
     }
-    let home = home_dir();
-    cands.push(base_dir());
-    if let Some(h) = &home {
-        cands.push(h.join("bmz-player"));
-    }
-    for d in [
-        "C:/bmz-player",
-        "D:/bmz-player",
-        "C:/BMZ Player",
-        "D:/BMZ Player",
-        "C:/Program Files/bmz-player",
-    ] {
-        cands.push(PathBuf::from(d));
-    }
-    if let Some(h) = &home {
-        cands.push(h.join("AppData/Local/Programs/bmz-player"));
+    let local_app_data = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|h| h.join("AppData").join("Local")));
+    if let Some(lad) = local_app_data {
+        cands.push(lad.join("Programs").join("BMZ Player"));
     }
     cands
 }
