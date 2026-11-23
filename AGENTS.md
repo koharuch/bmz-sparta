@@ -120,7 +120,7 @@ exe と同じフォルダ。GUI の設定画面もこのファイルを読み書
 | `hud` / `report` | HUD表示 / レポート自動表示 |
 | `hud_width` / `hud_bg_alpha` | HUDの幅 (px) / 背景の濃さ (0-255) |
 | `hud_show_best` / `hud_show_legend` / `hud_show_remain` / `hud_show_countdown` | HUDの表示項目 |
-| `hud_presets` | HUD位置プリセット `[{name, x, y}]` |
+| `hud_presets` | HUDプリセット `[{name, x, y, width, bg_alpha, show_best, show_legend, show_remain, show_countdown}]`。選ぶと位置と表示設定が一括で切り替わる。旧形式の `{name, x, y}` のみでも可 (その場合は位置だけ適用) |
 | `up_points` / `pts_exhard` / `pts_hard` / `pts_clear` / `fail_streak` | ルールの数値 |
 
 注意:

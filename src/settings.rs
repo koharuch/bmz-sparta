@@ -147,21 +147,134 @@ mod win {
         ("random", "ランダム"),
     ];
 
-    /// 位置プリセットを sparta.json の hud_presets から読む
-    fn presets_from_cfg(cfg: &Value) -> Vec<(String, i32, i32)> {
+    /// HUDプリセット1件分。位置は必須、他の項目は旧形式 (位置のみ) との
+    /// 互換のため任意で、無い項目は適用時に変更しない
+    #[derive(Clone, PartialEq)]
+    struct HudPreset {
+        name: String,
+        x: i32,
+        y: i32,
+        width: Option<i64>,
+        bg_alpha: Option<i64>,
+        show_best: Option<bool>,
+        show_legend: Option<bool>,
+        show_remain: Option<bool>,
+        show_countdown: Option<bool>,
+    }
+
+    /// プリセットを sparta.json の hud_presets から読む
+    fn presets_from_cfg(cfg: &Value) -> Vec<HudPreset> {
         cfg.get("hud_presets")
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
                     .filter_map(|p| {
-                        let name = p.get("name")?.as_str()?.to_string();
-                        let x = p.get("x")?.as_i64()? as i32;
-                        let y = p.get("y")?.as_i64()? as i32;
-                        Some((name, x, y))
+                        Some(HudPreset {
+                            name: p.get("name")?.as_str()?.to_string(),
+                            x: p.get("x")?.as_i64()? as i32,
+                            y: p.get("y")?.as_i64()? as i32,
+                            width: p.get("width").and_then(|v| v.as_i64()),
+                            bg_alpha: p.get("bg_alpha").and_then(|v| v.as_i64()),
+                            show_best: p.get("show_best").and_then(|v| v.as_bool()),
+                            show_legend: p.get("show_legend").and_then(|v| v.as_bool()),
+                            show_remain: p.get("show_remain").and_then(|v| v.as_bool()),
+                            show_countdown: p
+                                .get("show_countdown")
+                                .and_then(|v| v.as_bool()),
+                        })
                     })
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn preset_to_json(p: &HudPreset) -> Value {
+        let mut m = serde_json::Map::new();
+        m.insert("name".into(), json!(p.name));
+        m.insert("x".into(), json!(p.x));
+        m.insert("y".into(), json!(p.y));
+        if let Some(v) = p.width {
+            m.insert("width".into(), json!(v));
+        }
+        if let Some(v) = p.bg_alpha {
+            m.insert("bg_alpha".into(), json!(v));
+        }
+        if let Some(v) = p.show_best {
+            m.insert("show_best".into(), json!(v));
+        }
+        if let Some(v) = p.show_legend {
+            m.insert("show_legend".into(), json!(v));
+        }
+        if let Some(v) = p.show_remain {
+            m.insert("show_remain".into(), json!(v));
+        }
+        if let Some(v) = p.show_countdown {
+            m.insert("show_countdown".into(), json!(v));
+        }
+        Value::Object(m)
+    }
+
+    /// プリセットが現在の状態と一致するか (プリセット側に無い項目は不問)
+    fn preset_matches(p: &HudPreset, cur: &HudPreset) -> bool {
+        p.x == cur.x
+            && p.y == cur.y
+            && p.width.map_or(true, |v| Some(v) == cur.width)
+            && p.bg_alpha.map_or(true, |v| Some(v) == cur.bg_alpha)
+            && p.show_best.map_or(true, |v| Some(v) == cur.show_best)
+            && p.show_legend.map_or(true, |v| Some(v) == cur.show_legend)
+            && p.show_remain.map_or(true, |v| Some(v) == cur.show_remain)
+            && p.show_countdown.map_or(true, |v| Some(v) == cur.show_countdown)
+    }
+
+    /// コントロールの現在値からプリセットを組み立てる (登録用)
+    unsafe fn preset_from_controls(st: &State, name: String) -> HudPreset {
+        let (x, y) = current_pos();
+        HudPreset {
+            name,
+            x,
+            y,
+            width: Some(
+                get_text(st.h_hud_w)
+                    .trim()
+                    .parse::<i64>()
+                    .unwrap_or(460)
+                    .clamp(240, 1200),
+            ),
+            bg_alpha: Some(
+                get_text(st.h_hud_alpha)
+                    .trim()
+                    .parse::<i64>()
+                    .unwrap_or(26)
+                    .clamp(0, 255),
+            ),
+            show_best: Some(checked(st.h_best)),
+            show_legend: Some(checked(st.h_legend)),
+            show_remain: Some(checked(st.h_remain)),
+            show_countdown: Some(checked(st.h_countdown)),
+        }
+    }
+
+    /// プリセットをコントロールと hud-pos.json へ適用する
+    unsafe fn apply_preset(st: &State, p: &HudPreset) {
+        apply_preset_pos(p.x, p.y);
+        if let Some(w) = p.width {
+            set_text(st.h_hud_w, &w.to_string());
+        }
+        if let Some(a) = p.bg_alpha {
+            set_text(st.h_hud_alpha, &a.to_string());
+        }
+        if let Some(b) = p.show_best {
+            set_check(st.h_best, b);
+        }
+        if let Some(b) = p.show_legend {
+            set_check(st.h_legend, b);
+        }
+        if let Some(b) = p.show_remain {
+            set_check(st.h_remain, b);
+        }
+        if let Some(b) = p.show_countdown {
+            set_check(st.h_countdown, b);
+        }
     }
 
     /// hud-pos.json の現在位置 (x, y)
@@ -195,8 +308,8 @@ mod win {
 
     unsafe fn refresh_presets(st: &mut State, select: Option<usize>) {
         send(st.h_preset, CB_RESETCONTENT, 0, 0);
-        for (name, _, _) in &st.presets {
-            combo_add(st.h_preset, name);
+        for p in &st.presets {
+            combo_add(st.h_preset, &p.name);
         }
         if let Some(i) = select {
             send(st.h_preset, CB_SETCURSEL, i, 0);
@@ -225,7 +338,7 @@ mod win {
         h_bmz_label: HWND,
         h_preset: HWND,
         h_preset_name: HWND,
-        presets: Vec<(String, i32, i32)>,
+        presets: Vec<HudPreset>,
         h_hud_w: HWND,
         h_hud_alpha: HWND,
         h_best: HWND,
@@ -563,7 +676,7 @@ mod win {
                 font,
             );
             // ---- HUDタブ ----
-            label(&mut st.page_hud, 12, 116, 176, "位置プリセット");
+            label(&mut st.page_hud, 12, 116, 176, "プリセット");
             st.h_preset = make(
                 hwnd,
                 w!("COMBOBOX"),
@@ -572,11 +685,11 @@ mod win {
                 196,
                 116,
                 248,
-                200,
+                120,
                 ID_PRESET,
                 font,
             );
-            label(&mut st.page_hud, 12, 148, 176, "現在の位置を登録");
+            label(&mut st.page_hud, 12, 148, 176, "現在の設定を登録");
             st.h_preset_name = make(
                 hwnd,
                 w!("EDIT"),
@@ -585,7 +698,7 @@ mod win {
                 196,
                 148,
                 140,
-                22,
+                24,
                 ID_PRESET_NAME,
                 font,
             );
@@ -597,7 +710,7 @@ mod win {
                 344,
                 148,
                 48,
-                22,
+                24,
                 ID_PRESET_ADD,
                 font,
             );
@@ -610,7 +723,7 @@ mod win {
                 396,
                 148,
                 48,
-                22,
+                24,
                 ID_PRESET_DEL,
                 font,
             );
@@ -829,9 +942,20 @@ mod win {
                 &cfg_i64(&st.cfg, "day_start_hour").unwrap_or(0).to_string(),
             );
             refresh_presets(st, None);
-            // 現在位置と一致するプリセットがあれば選択状態にする
+            // 現在の状態と一致するプリセットがあれば選択状態にする
             let pos = current_pos();
-            if let Some(i) = st.presets.iter().position(|(_, x, y)| (*x, *y) == pos) {
+            let cur = HudPreset {
+                name: String::new(),
+                x: pos.0,
+                y: pos.1,
+                width: cfg_i64(&st.cfg, "hud_width"),
+                bg_alpha: cfg_i64(&st.cfg, "hud_bg_alpha"),
+                show_best: Some(cfg_bool(&st.cfg, "hud_show_best", true)),
+                show_legend: Some(cfg_bool(&st.cfg, "hud_show_legend", true)),
+                show_remain: Some(cfg_bool(&st.cfg, "hud_show_remain", true)),
+                show_countdown: Some(cfg_bool(&st.cfg, "hud_show_countdown", true)),
+            };
+            if let Some(i) = st.presets.iter().position(|p| preset_matches(p, &cur)) {
                 send(st.h_preset, CB_SETCURSEL, i, 0);
             }
             set_text(
@@ -1218,12 +1342,8 @@ bmz-player のインストールフォルダを選んでください。"
         cfg_set(&mut st.cfg, "result_seconds", json!(rs.max(0)));
         let dsh: i64 = get_text(st.h_day_start).trim().parse().unwrap_or(0);
         cfg_set(&mut st.cfg, "day_start_hour", json!(dsh.clamp(0, 23)));
-        // 位置プリセット (旧アンカー方式は廃止。位置そのものは hud-pos.json が正)
-        let presets: Vec<Value> = st
-            .presets
-            .iter()
-            .map(|(name, x, y)| json!({"name": name, "x": x, "y": y}))
-            .collect();
+        // HUDプリセット (旧アンカー方式は廃止。位置そのものは hud-pos.json が正)
+        let presets: Vec<Value> = st.presets.iter().map(preset_to_json).collect();
         cfg_set(&mut st.cfg, "hud_presets", Value::Array(presets));
         if let Some(obj) = st.cfg.as_object_mut() {
             obj.remove("hud_anchor");
@@ -1316,8 +1436,8 @@ bmz-player のインストールフォルダを選んでください。"
                         if let Some(st) = s.borrow_mut().as_mut() {
                             let sel = combo_sel(st.h_preset);
                             if sel >= 0 && (sel as usize) < st.presets.len() {
-                                let (_, x, y) = st.presets[sel as usize];
-                                apply_preset_pos(x, y);
+                                let p = st.presets[sel as usize].clone();
+                                unsafe { apply_preset(st, &p) };
                             }
                         }
                     });
@@ -1332,20 +1452,24 @@ bmz-player のインストールフォルダを選んでください。"
                                 while st
                                     .presets
                                     .iter()
-                                    .any(|(p, _, _)| *p == format!("プリセット{n}"))
+                                    .any(|p| p.name == format!("プリセット{n}"))
                                 {
                                     n += 1;
                                 }
                                 name = format!("プリセット{n}");
                             }
-                            let (x, y) = current_pos();
-                            let idx = match st.presets.iter().position(|(nm, _, _)| *nm == name) {
+                            let new_preset = unsafe { preset_from_controls(st, name) };
+                            let idx = match st
+                                .presets
+                                .iter()
+                                .position(|p| p.name == new_preset.name)
+                            {
                                 Some(i) => {
-                                    st.presets[i] = (name, x, y);
+                                    st.presets[i] = new_preset;
                                     i
                                 }
                                 None => {
-                                    st.presets.push((name, x, y));
+                                    st.presets.push(new_preset);
                                     st.presets.len() - 1
                                 }
                             };
