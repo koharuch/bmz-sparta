@@ -85,7 +85,17 @@ mod win {
         show_countdown: bool,
     }
 
-    impl Renderer {
+    /// ポイント/連敗のバーを作る。マスが多い設定 (連敗99等) では
+/// マスを全部描くと画面幅いっぱいに伸びてしまうので数値表記にする
+fn seg_bar(filled: i64, total: i64) -> String {
+    if total > 12 {
+        format!("{filled}/{total}")
+    } else {
+        "■".repeat(filled.max(0) as usize) + &"□".repeat((total - filled).max(0) as usize)
+    }
+}
+
+impl Renderer {
         fn new(w: i32, h: i32) -> Renderer {
             let s = (w as f64 / BASE_W).clamp(0.8, 1.7);
             Renderer {
@@ -285,10 +295,8 @@ mod win {
                 } else {
                     3
                 };
-                let seg_up = "■".repeat(pts.max(0) as usize)
-                    + &"□".repeat((mx - pts).max(0) as usize);
-                let seg_dn = "■".repeat(lose.max(0) as usize)
-                    + &"□".repeat((lose_max - lose).max(0) as usize);
+                let seg_up = seg_bar(pts, mx);
+                let seg_dn = seg_bar(lose, lose_max);
                 lines.push((
                     format!("レベルアップ [{seg_up}]"),
                     FG,
